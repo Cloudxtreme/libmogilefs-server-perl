@@ -1,0 +1,16 @@
+Source: libmogilefs-server-perl
+Section: perl
+Priority: optional
+Build-Depends: debhelper (>= 5), libdbi-perl, libdbd-mysql-perl
+Build-Depends-Indep: perl (>= 5.6.10-12)
+Maintainer: Stuart Teasdale <stuart@we7.com>
+Standards-Version: 3.8.0
+Homepage: http://search.cpan.org/dist/mogilefs-server/
+
+Package: libmogilefs-server-perl
+Architecture: all
+Depends: ${perl:Depends}, ${misc:Depends}, libmogilefs-client-perl, libsys-syscall-perl, libnet-netmask-perl, libdanga-socket-perl, libio-aio-perl, libdbi-perl,libdbd-mysql-perl 
+Description: MogileFS (distributed filesystem) server.
+ MogileFS (distributed filesystem) server.
+ .
+ This description was automagically extracted from the module by dh-make-perl.

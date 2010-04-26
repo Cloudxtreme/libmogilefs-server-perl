@@ -1,0 +1,23 @@
+This is the debian package for the mogilefs-server module.
+It was created by stuart <stuart@oidipous.parthenon.local> using dh-make-perl.
+
+It was downloaded from http://search.cpan.org/dist/mogilefs-server/
+
+This copyright info was automatically extracted from the perl module.
+It may not be accurate, so you better check the module sources
+if you don't want to get into legal troubles.
+
+The upstream author is: Brad Fitzpatrick <brad@danga.com>.
+
+
+This module is Copyright (c) 2005, 2006 Six Apart, Ltd.
+
+All rights reserved.
+
+You may distribute under the terms of either the GNU General Public
+License or the Artistic License, as specified in the Perl README file.
+If you need more liberal licensing terms, please contact the
+maintainer.
+
+The Debian packaging is (C) 2010, stuart <stuart@oidipous.parthenon.local> and
+is licensed under the same terms as the software itself (see above).

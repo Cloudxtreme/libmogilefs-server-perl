@@ -1,0 +1,5 @@
+libmogilefs-server-perl (2.36-1) unstable; urgency=low
+
+  * Initial Release.
+
+ -- Stuart Teasdale <stuart@we7.com>  Mon, 26 Apr 2010 12:22:48 +0000
