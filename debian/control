@@ -9,7 +9,7 @@ Homepage: http://search.cpan.org/dist/mogilefs-server/
 
 Package: libmogilefs-server-perl
 Architecture: all
-Depends: ${perl:Depends}, ${misc:Depends}, libmogilefs-client-perl, libsys-syscall-perl, libnet-netmask-perl, libdanga-socket-perl, libio-aio-perl, libdbi-perl,libdbd-mysql-perl 
+Depends: ${perl:Depends}, ${misc:Depends}, libmogilefs-client-perl, libsys-syscall-perl, libnet-netmask-perl, libdanga-socket-perl, libio-aio-perl, libdbi-perl,libdbd-mysql-perl, libperlbal-perl (>1.73) 
 Description: MogileFS (distributed filesystem) server.
  MogileFS (distributed filesystem) server.
  .
