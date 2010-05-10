@@ -1,3 +1,9 @@
+libmogilefs-server-perl (2.36-2) unstable; urgency=low
+
+  * Tell the init scripts to do restarts in postinst rather than stop/start
+
+ -- Stuart Teasdale <stuart@we7.com>  Mon, 10 May 2010 10:44:52 +0100
+
 libmogilefs-server-perl (2.36-1) unstable; urgency=low
 
   * Initial Release.

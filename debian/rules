@@ -52,8 +52,8 @@ binary-indep: build install
 	dh_testroot
 	dh_installdocs TODO
 	dh_installchangelogs CHANGES
-	dh_installinit --name mogstored
-	dh_installinit --name mogilefsd
+	dh_installinit -R --name mogstored
+	dh_installinit -R --name mogilefsd
 	dh_perl
 	dh_compress
 	dh_fixperms
