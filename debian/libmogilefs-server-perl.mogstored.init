@@ -24,8 +24,17 @@ DAEMON=/usr/bin/mogstored
 NAME=mogstored
 DESC=mogstored
 PIDFILE=/var/run/$NAME.pid
+DEFAULTS=/etc/defailt/$NAME
+
 
 test -x $DAEMON || exit 0
+
+[ -e $DEFAULTS ] && . $DEFAULTS
+
+if [ "x$START" != "xYES" ]
+  then
+  exit 0
+fi
 
 set -e
 

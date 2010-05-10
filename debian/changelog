@@ -1,3 +1,9 @@
+libmogilefs-server-perl (2.36-4) unstable; urgency=low
+
+  * Defaults files to control daemon start and stop
+
+ --  Stuart Teasdale <stuart@we7.com>  Mon, 10 May 2010 14:15:06 +0000
+
 libmogilefs-server-perl (2.36-3) unstable; urgency=low
 
   * Add versioned depends on libperlbal-perl
