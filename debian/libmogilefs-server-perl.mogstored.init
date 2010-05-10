@@ -24,7 +24,7 @@ DAEMON=/usr/bin/mogstored
 NAME=mogstored
 DESC=mogstored
 PIDFILE=/var/run/$NAME.pid
-DEFAULTS=/etc/defailt/$NAME
+DEFAULTS=/etc/default/$NAME
 
 
 test -x $DAEMON || exit 0
