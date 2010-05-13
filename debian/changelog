@@ -1,8 +1,14 @@
+libmogilefs-server-perl (2.36-6) unstable; urgency=low
+
+  * Move the START check stanza to below loading the defaults
+
+ --  Stuart Teasdale <stuart@we7.com>  Thu, 13 May 2010 09:29:21 +0000
+
 libmogilefs-server-perl (2.36-5) unstable; urgency=low
 
   *  Typo fail in init script for mogstored
 
- -- Stuart Teasdale <stuart@we8.com>  Mon, 10 May 2010 22:20:57 +0100
+ -- Stuart Teasdale <stuart@we7.com>  Mon, 10 May 2010 22:20:57 +0100
 
 libmogilefs-server-perl (2.36-4) unstable; urgency=low
 

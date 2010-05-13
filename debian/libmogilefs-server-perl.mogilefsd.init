@@ -34,13 +34,13 @@ if [ ! -e $DEFAULTS ]
 	exit 0
 fi
 
+#Read defaults file
+[ -r $DEFAULTS ] && . $DEFAULTS
+
 if [ "x$START" != "xYES" ]
   then
   exit 0
 fi
-
-#Read defaults file
-[ -r $DEFAULTS ] && . $DEFAULTS
 
 if [ "$MOGILEFSD_RUNASUSER" == "" ]
   then
