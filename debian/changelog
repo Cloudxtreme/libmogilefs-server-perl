@@ -1,3 +1,9 @@
+libmogilefs-server-perl (2.46-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- stuart <stuart@we7.com>  Thu, 20 Jan 2011 10:24:17 +0000
+
 libmogilefs-server-perl (2.36-6) unstable; urgency=low
 
   * Move the START check stanza to below loading the defaults
