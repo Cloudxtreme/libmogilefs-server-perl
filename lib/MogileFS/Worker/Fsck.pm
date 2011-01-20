@@ -9,6 +9,7 @@ use fields (
             'opt_nostat',          # bool: do we trust mogstoreds? skipping size stats?
             );
 use MogileFS::Util qw(every error debug);
+use MogileFS::Config;
 use List::Util ();
 use Time::HiRes ();
 
@@ -70,7 +71,7 @@ sub work {
     my $sto         = Mgd::get_store();
     my $max_checked = 0;
 
-    every(1.0, sub {
+    every(2.0, sub {
         my $sleep_set = shift;
         $nowish = time();
         local $Mgd::nowish = $nowish;
@@ -86,19 +87,17 @@ sub work {
         }
 
         my $queue_todo = $self->queue_todo('fsck');
-        unless (@{$queue_todo}) {
-            $self->send_to_parent('worker_bored 50 fsck');
-            $self->read_from_parent(1);
-        } else {
-            $self->parent_ping;
-        }
+        # This counts the same as a $self->still_alive;
+        $self->send_to_parent('worker_bored 50 fsck');
+        return unless @{$queue_todo};
+        $self->validate_dbh;
 
         my @fids = ();
         while (my $todo = shift @{$queue_todo}) {
             my $fid = MogileFS::FID->new($todo->{fid});
             unless ($fid->exists) {
                 # FID stopped existing before being checked.
-                $sto->delete_fid_from_file_to_queue($fid->id);
+                $sto->delete_fid_from_file_to_queue($fid->id, FSCK_QUEUE);
             }
             push(@fids, $fid);
         }
@@ -124,7 +123,7 @@ sub work {
                 sleep 5;
                 next;
             }
-            $sto->delete_fid_from_file_to_queue($fid->id);
+            $sto->delete_fid_from_file_to_queue($fid->id, FSCK_QUEUE);
             $n_check++;
             $beat->();
         }
@@ -299,7 +298,7 @@ sub fix_fid {
             # don't log in desperate mode, as we'd have "file missing!" log entries
             # for every device in the normal case, which is expected.
             unless ($is_desperate_mode) {
-                if (! $disk_size) {
+                if ($disk_size == -1) {
                     $fid->fsck_log(EV_FILE_MISSING, $dev);
                 } else {
                     $fid->fsck_log(EV_BAD_LENGTH, $dev);

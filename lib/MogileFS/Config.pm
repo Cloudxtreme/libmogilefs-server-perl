@@ -7,7 +7,7 @@ use MogileFS::Store;
 use Sys::Hostname ();
 
 our @ISA = qw(Exporter);
-our @EXPORT = qw($DEBUG config set_config);
+our @EXPORT = qw($DEBUG config set_config FSCK_QUEUE REBAL_QUEUE);
 our @EXPORT_OK = qw(DEVICE_SUMMARY_CACHE_TIMEOUT);
 
 our ($DEFAULT_CONFIG, $MOGSTORED_STREAM_PORT, $DEBUG);
@@ -15,6 +15,8 @@ $DEBUG = 0;
 $DEFAULT_CONFIG = "/etc/mogilefs/mogilefsd.conf";
 $MOGSTORED_STREAM_PORT = 7501;
 
+use constant FSCK_QUEUE => 1;
+use constant REBAL_QUEUE => 2;
 use constant DEVICE_SUMMARY_CACHE_TIMEOUT => 15;
 
 my %conf;
@@ -61,6 +63,7 @@ our (
     $min_free_space,
     $max_disk_age,
     $node_timeout,          # time in seconds to wait for storage node responses
+    $conn_timeout,          # time in seconds to wait for connection to storage node
     $pidfile,
     $repl_use_get_port,
     $local_network,
@@ -91,6 +94,7 @@ sub load_config {
                              'min_free_space=i' => \$cmdline{min_free_space},
                              'default_mindevcount=i' => \$cmdline{default_mindevcount},
                              'node_timeout=i' => \$cmdline{node_timeout},
+                             'conn_timeout=i' => \$cmdline{conn_timeout},
                              'max_handles=i'  => \$cmdline{max_handles},
                              'pidfile=s'      => \$cmdline{pidfile},
                              'no_schema_check' => \$cmdline{no_schema_check},
@@ -157,6 +161,7 @@ sub load_config {
     choose_value( 'mogstored_stream_port', $MOGSTORED_STREAM_PORT );
     choose_value( 'default_mindevcount', 2 );
     $node_timeout   = choose_value( 'node_timeout', 2 );
+    $conn_timeout   = choose_value( 'conn_timeout', 2 );
 
     choose_value( 'rebalance_ignore_missing', 0 );
     $repl_use_get_port = choose_value( 'repl_use_get_port', 0 );
