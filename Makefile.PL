@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 #
 #   Perl Makefile for MogileFS
-#   $Id: Makefile.PL 1449 2010-04-16 21:37:56Z dormando $
+#   $Id$
 #
 #   Invoke with 'perl Makefile.PL'
 #
@@ -16,14 +16,14 @@ $exefiles = ["mogstored"] if exists $ENV{DANGABUILD_MOGSTOREDONLY};
 $exefiles = ["mogilefsd"] if exists $ENV{DANGABUILD_MOGILEFSDONLY};
 
 WriteMakefile(
-    NAME                    => 'mogilefs-server',
+    NAME                    => 'MogileFS::Server',
     VERSION_FROM            => 'lib/MogileFS/Server.pm',
     AUTHOR                  => 'Brad Fitzpatrick <brad@danga.com>',
     ABSTRACT_FROM           => 'lib/MogileFS/Server.pm',
     EXE_FILES               => $exefiles,
     PREREQ_PM               => {
         'Danga::Socket'    => '1.56',
-        'Perlbal'          => '1.75',
+        'Perlbal'          => '1.76',
         'Sys::Syslog'      => 0,
         'Sys::Syscall'     => '0.22',
         'Getopt::Long'     => 0,
@@ -40,6 +40,13 @@ WriteMakefile(
             package   => ['ProcessHandle', 'TrackerHandle', 'MogstoredHandle',
             'MogPath', 'Mgd'],
         },
+          resources => {
+            homepage    =>      'http://www.mogilefs.org',
+            bugtracker  =>      'http://code.google.com/p/mogilefs/issues/list',
+            repository  =>      'git://github.com/mogilefs/MogileFS-Server.git',
+            MailingList =>      'http://groups.google.com/group/mogile',
+        },
+
     },
 );
 

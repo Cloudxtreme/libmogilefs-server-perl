@@ -60,25 +60,8 @@ sub delete {
     my %opts = @_;
     my ($host, $port) = ($self->{host}, $self->{port});
 
-    my $httpsock;
-
-    # try to reuse cached socket
-    if (my $cached = $http_socket{"$host:$port"}) {
-        my ($pid, $conntime, $cachesock) = @{ $cached };
-        # see if it's still connected
-        if ($pid == $$ && getpeername($cachesock) &&
-            $conntime > Time::HiRes::time() - 15 &&
-            # readability would indicated conn closed, or garbage:
-            ! wait_for_readability(fileno($cachesock), 0.00))
-        {
-            $httpsock = $cachesock;
-        }
-    }
-
-    unless ($httpsock) {
-        $httpsock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port, Timeout => 2)
-            or die "can't connect to $host:$port in 2 seconds";
-    }
+    my $httpsock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port, Timeout => 2)
+        or die "can't connect to $host:$port in 2 seconds";
 
     $httpsock->write("DELETE $self->{uri} HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
 
@@ -103,21 +86,14 @@ sub delete {
             next;
         }
         die "Unexpected HTTP response line during DELETE from $host:$port: [$line]" unless $did_del;
-        $keep_alive = 1 if $line =~ /^Connection:.+\bkeep-alive\b/i;
     }
     die "Didn't get valid HTTP response during DELETE from $host:port" unless $did_del;
-
-    if ($keep_alive) {
-        $http_socket{"$host:$port"} = [ $$, Time::HiRes::time(), $httpsock ];
-    } else {
-        delete $http_socket{"$host:$port"};
-    }
 
     return 1;
 }
 
 # returns size of file, (doing a HEAD request and looking at content-length, or side-channel to mogstored)
-# returns 0 on file missing (404 or -1 from sidechannel),
+# returns -1 on file missing (404 or -1 from sidechannel),
 # returns undef on connectivity error
 use constant FILE_MISSING => -1;
 sub size {
@@ -167,7 +143,7 @@ sub size {
     my $stream_response_timeout = 1.0;
     my $read_timed_out = 0;
 
-    # returns defined on a real answer (0 = file missing, >0 = file length),
+    # returns defined on a real answer (-1 = file missing, >=0 = file length),
     # returns undef on connectivity problems.
     my $parse_response = sub {
         # give the socket 1 second to become readable until we get
@@ -195,13 +171,13 @@ sub size {
         return undef unless $line =~ /^(\S+)\s+(-?\d+)/; # expected format: "uri size"
         return undeferr("get_file_size() requested size of $path, got back size of $1 ($2 bytes)")
             if $1 ne $uri;
-        # backchannel sends back -1 on non-existent file, which we map to the defined value '0'
+        # backchannel sends back -1 on non-existent file, which we map to the defined value '-1'
         return FILE_MISSING if $2 < 0;
         # otherwise, return byte size of file
         return $2+0;
     };
 
-    my $conn_timeout = 2;
+    my $conn_timeout = MogileFS->config("conn_timeout") || 2;
 
     # try using the cached socket
     if ($sock) {

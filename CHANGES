@@ -1,3 +1,105 @@
+2011-01-13: Release version 2.46
+
+   * Fix job_master crash under postgres (Robin H. Johnson <robbat2@gentoo.org>)
+
+   * Revert "only dbh->ping if not used in over a minute" (dormando <dormando@rydia.net>)
+      *IMPORTANT FIX* if you're using 2.45, you should upgrade to this.
+
+   * Example application. (dormando <dormando@rydia.net>)
+
+   * missing $fidid for source_down error message (dormando <dormando@rydia.net>)
+
+2011-01-08: Release version 2.45
+
+   * file_debug command (dormando <dormando@rydia.net>)
+
+   * add "file_info" command for fetching metadata. (dormando <dormando@rydia.net>)
+
+   * don't allow clients to upload to the wrong dev (dormando <dormando@rydia.net>)
+
+   * validate database handles in the right places (dormando <dormando@rydia.net>)
+
+   * only dbh->ping if not used in over a minute (dormando <dormando@rydia.net>)
+
+   * make list_fids work with gaps (dormando <dormando@rydia.net>)
+
+   * Postgres enqueue_fids_* cleanup (Robin H. Johnson <robbat2@gentoo.org>)
+
+   * Fixes MogileFS::Store::retry_on_deadlock to honor non-deadlock exceptions (Jason Mills <jmmills@cpan.org>)
+
+   * Implements tests for MogileFS::Store::retry_on_deadlock (Jason Mills <jmmills@cpan.org>)
+
+   * Implements tests for MogileFS::Store::ignore_replace (Jason Mills <jmmills@cpan.org>)
+
+   * job_master was never revalidating its dbh handle. (dormando <dormando@rydia.net>)
+
+   * add a couple useful stats (dormando <dormando@rydia.net>)
+
+   * Correct iostat command on darwin (Tomas Doran <bobtfish@bobtfish.net>)
+
+   * Fix test db creation with SQLite (Tomas Doran <bobtfish@bobtfish.net>)
+
+   * Fix SQLite so tracker at least starts (Tomas Doran <bobtfish@bobtfish.net>)
+
+   * additional debian packaging fixes (kad <kad@blegh.net>)
+
+   * debian packaging updates. (Andre Bohr <andrepascha@googlemail.com>)
+
+   * Documentation updates. (Pyry Hakulinen <pyh@iki.fi>)
+
+   * HTTPFile returns -1 if the file is missing from the device. Content-Length: 0 is valid and it should return BLEN not MISS. (Pyry Hakulinen <pyh@iki.fi>)
+
+   * some further editing of the info file. (dormando <dormando@rydia.net>)
+
+   * Changed repository metadata (Tomas Doran <bobtfish@bobtfish.net>)
+
+2010-11-25: Release version 2.44
+
+        * Fix issue with rebalance not filtering source devs from the
+          destination list.
+
+        * Make global rebalance limits work (Martijn Lina)
+
+2010-10-10: Release version 2.43
+
+        * Make over-replication fixable again. (sigh)
+
+        * Fix old bug in MultipleHosts() which would not let you drop from
+          mindev > 1 down to 1.
+
+2010-10-08: Release version 2.42
+
+        * Make FSCK run again (Andre Pascha)
+
+        * Fix Postgres schema upgrade issue (hopefully)
+
+2010-10-06: Release version 2.41
+
+        * One line change that to fix uprading to 2.40
+
+2010-09-28: Release version 2.40
+
+        * Optimize worker sleep patterns and worker/parent communications.
+
+        * New rebalance/drain code. See the docs/wiki for how to use.
+          ***NOTE*** Old drain/rebalance code is disabled. Setting a device
+          into drain mode no longer does what you think it would.
+          http://code.google.com/p/mogilefs/wiki/Rebalance
+
+2010-08-13: Release version 2.37
+
+        * Make HTTP DELETE's work reliably
+
+        * Fix obscure crashes related to "unknown devices"
+
+        * make it slightly harder to crash trackers with bad slave DB settings
+          (Tomas Doran)
+
+        * make tracker -> storage node connection timeout configurable.
+          was hardcoded to 2 seconds. (Tomas Doran)
+
+        * update_class command (Tomas Doran)
+
 2010-04-16: Release version 2.36
 
         * Bump required version of perlbal for mogstored.

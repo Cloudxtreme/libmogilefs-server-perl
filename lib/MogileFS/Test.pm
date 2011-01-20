@@ -33,7 +33,7 @@ sub find_mogclient_or_skip {
     }
 
     unless (eval { TrackerHandle::_mogadm_exe() }) {
-        warn "Can't find mogadm utility.\n";
+        warn "Can't find mogadm utility $@\n";
         Test::More::plan('skip_all' => "Can't find mogadm executable, necessary for testing.");
     }
 
@@ -115,7 +115,7 @@ sub create_mogstored {
 
     my $conn = $connect->();
     die "Failed:  tracker already running on port 7500?\n" if $conn;
-
+    $ENV{PERL5LIB} .= ":$Bin/../lib";
     my @args = ("$Bin/../mogstored",
                 "--httplisten=$ip:7500",
                 "--mgmtlisten=$ip:7501",
@@ -174,13 +174,15 @@ sub ipport {
 my $_mogadm_exe_cache;
 sub _mogadm_exe {
     return $_mogadm_exe_cache if $_mogadm_exe_cache;
-    foreach my $exe ("$FindBin::Bin/../../utils/mogadm",
-                     "$FindBin::Bin/../../../utils/mogadm",
-                     "/usr/bin/mogadm",
-                     "/usr/sbin/mogadm",
-                     "/usr/local/bin/mogadm",
-                     "/usr/local/sbin/mogadm",
+    for my $dir ("$FindBin::Bin/../../utils",
+                     "$FindBin::Bin/../../../utils",
+                     split(/:/, $ENV{PATH}),
+                     "/usr/bin",
+                     "/usr/sbin",
+                     "/usr/local/bin",
+                     "/usr/local/sbin",
                      ) {
+        my $exe = $dir . '/mogadm';
         return $_mogadm_exe_cache = $exe if -x $exe;
     }
     die "mogadm executable not found.\n";
