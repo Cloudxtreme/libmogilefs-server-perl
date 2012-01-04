@@ -131,8 +131,8 @@ sub TABLE_device {
     status  ENUM('alive','dead','down','readonly','drain'),
     weight  MEDIUMINT DEFAULT 100,
 
-    mb_total   MEDIUMINT UNSIGNED,
-    mb_used    MEDIUMINT UNSIGNED,
+    mb_total   INT UNSIGNED,
+    mb_used    INT UNSIGNED,
     mb_asof    INT UNSIGNED,
     PRIMARY KEY (devid),
     INDEX   (status)
@@ -236,6 +236,7 @@ sub upgrade_add_device_drain {
 }
 sub upgrade_modify_server_settings_value { 1 }
 sub upgrade_add_file_to_queue_arg { 1 }
+sub upgrade_modify_device_size { 1 }
 
 # inefficient, but no warning and no locking
 sub should_begin_replicating_fidid {

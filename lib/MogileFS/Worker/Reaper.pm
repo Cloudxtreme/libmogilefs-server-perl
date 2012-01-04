@@ -3,6 +3,7 @@ package MogileFS::Worker::Reaper;
 
 use strict;
 use base 'MogileFS::Worker';
+use MogileFS::Server;
 use MogileFS::Util qw(every error debug);
 use MogileFS::Config qw(DEVICE_SUMMARY_CACHE_TIMEOUT);
 
@@ -28,7 +29,7 @@ sub work {
         debug("Reaper running; looking for dead devices");
 
         foreach my $dev (grep { $_->dstate->is_perm_dead }
-                         MogileFS::Device->devices)
+                         Mgd::device_factory()->get_all)
         {
             my $devid = $dev->id;
             next if $all_empty{$devid};
