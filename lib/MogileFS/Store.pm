@@ -18,7 +18,8 @@ use List::Util ();
 # 12: adds 'file_to_delete2' table
 # 13: modifies 'server_settings.value' to TEXT for wider values
 #     also adds a TEXT 'arg' column to file_to_queue for passing arguments
-use constant SCHEMA_VERSION => 13;
+# 14: modifies 'device' mb_total, mb_used to INT for devs > 16TB
+use constant SCHEMA_VERSION => 14;
 
 sub new {
     my ($class) = @_;
@@ -296,7 +297,7 @@ sub ping {
 sub condthrow {
     my ($self, $optmsg) = @_;
     my $dbh = $self->dbh;
-    return unless $dbh->err;
+    return 1 unless $dbh->err;
     my ($pkg, $fn, $line) = caller;
     my $msg = "Database error from $pkg/$fn/$line: " . $dbh->errstr;
     $msg .= ": $optmsg" if $optmsg;
@@ -341,6 +342,7 @@ sub conddup {
     my ($self, $code) = @_;
     my $rv = eval { $code->(); };
     throw("dup") if $self->was_duplicate_error;
+    croak($@) if $@;
     return $rv;
 }
 
@@ -434,6 +436,7 @@ sub setup_database {
     $sto->upgrade_add_class_replpolicy;
     $sto->upgrade_modify_server_settings_value;
     $sto->upgrade_add_file_to_queue_arg;
+    $sto->upgrade_modify_device_size;
 
     return 1;
 }
@@ -624,8 +627,8 @@ sub TABLE_device {
     status  ENUM('alive','dead','down'),
     weight  MEDIUMINT DEFAULT 100,
 
-    mb_total   MEDIUMINT UNSIGNED,
-    mb_used    MEDIUMINT UNSIGNED,
+    mb_total   INT UNSIGNED,
+    mb_used    INT UNSIGNED,
     mb_asof    INT UNSIGNED,
     PRIMARY KEY (devid),
     INDEX   (status)
@@ -718,6 +721,7 @@ sub upgrade_add_device_readonly { 1 }
 sub upgrade_add_device_drain { die "Not implemented in $_[0]" }
 sub upgrade_modify_server_settings_value { die "Not implemented in $_[0]" }
 sub upgrade_add_file_to_queue_arg { die "Not implemented in $_[0]" }
+sub upgrade_modify_device_size { die "Not implemented in $_[0]" }
 
 sub upgrade_add_class_replpolicy {
     my ($self) = @_;
@@ -735,6 +739,8 @@ sub delete_host {
 # return true if deleted, 0 if didn't exist, exception if error
 sub delete_domain {
     my ($self, $dmid) = @_;
+    throw("has_files")   if $self->domain_has_files($dmid);
+    throw("has_classes") if $self->domain_has_classes($dmid);
     return $self->dbh->do("DELETE FROM domain WHERE dmid = ?", undef, $dmid);
 }
 
@@ -743,6 +749,13 @@ sub domain_has_files {
     my $has_a_fid = $self->dbh->selectrow_array('SELECT fid FROM file WHERE dmid = ? LIMIT 1',
                                                 undef, $dmid);
     return $has_a_fid ? 1 : 0;
+}
+
+sub domain_has_classes {
+    my ($self, $dmid) = @_;
+    my $has_a_class = $self->dbh->selectrow_array('SELECT classid FROM class WHERE dmid = ? LIMIT 1',
+        undef, $dmid);
+    return $has_a_class ? 1 : 0;
 }
 
 sub class_has_files {
@@ -763,17 +776,22 @@ sub create_class {
     my $maxid = $dbh->selectrow_array
         ('SELECT MAX(classid) FROM class WHERE dmid = ?', undef, $dmid) || 0;
 
+    my $clsid = $maxid + 1;
+    if ($classname eq 'default') {
+        $clsid = 0;
+    }
+
     # now insert the new class
     my $rv = eval {
         $dbh->do("INSERT INTO class (dmid, classid, classname, mindevcount) VALUES (?, ?, ?, ?)",
-                 undef, $dmid, $maxid + 1, $classname, 2);
+                 undef, $dmid, $clsid, $classname, 2);
     };
     if ($@ || $dbh->err) {
         if ($self->was_duplicate_error) {
             throw("dup");
         }
     }
-    return $maxid + 1 if $rv;
+    return $clsid if $rv;
     $self->condthrow;
     die;
 }
@@ -951,8 +969,11 @@ sub register_tempfile {
         return $exists ? 1 : 0;
     };
 
+    # See notes in MogileFS::Config->check_database
+    my $min_fidid = MogileFS::Config->config('min_fidid');
+
     # if the fid is in use, do something
-    while ($fid_in_use->($fid)) {
+    while ($fid_in_use->($fid) || $fid <= $min_fidid) {
         throw("dup") if $explicit_fid_used;
 
         # be careful of databases which reset their
@@ -1042,6 +1063,18 @@ sub create_device {
     return 1;
 }
 
+sub update_device {
+    my ($self, $devid, $to_update) = @_;
+    my @keys = sort keys %$to_update;
+    return unless @keys;
+    $self->conddup(sub {
+        $self->dbh->do("UPDATE device SET " . join('=?, ', @keys)
+            . "=? WHERE devid=?", undef, (map { $to_update->{$_} } @keys),
+            $devid);
+    });
+    return 1;
+}
+
 sub update_device_usage {
     my $self = shift;
     my %arg  = $self->_valid_params([qw(mb_total mb_used devid)], @_);
@@ -1050,6 +1083,19 @@ sub update_device_usage {
                        " WHERE devid = ?", undef, $arg{mb_total}, $arg{mb_used}, $arg{devid});
     };
     $self->condthrow;
+}
+
+# This is unimplemented at the moment as we must verify:
+# - no file_on rows exist
+# - nothing in file_to_queue is going to attempt to use it
+# - nothing in file_to_replicate is going to attempt to use it
+# - it's already been marked dead
+# - that all trackers are likely to know this :/
+# - ensure the devid can't be reused
+# IE; the user can't mark it dead then remove it all at once and cause their
+# cluster to implode.
+sub delete_device {
+    die "Unimplemented; needs further testing";
 }
 
 sub mark_fidid_unreachable {
@@ -1077,6 +1123,7 @@ sub set_device_state {
 
 sub delete_class {
     my ($self, $dmid, $cid) = @_;
+    throw("has_files") if $self->class_has_files($dmid, $cid);
     eval {
         $self->dbh->do("DELETE FROM class WHERE dmid = ? AND classid = ?", undef, $dmid, $cid);
     };
@@ -1143,11 +1190,25 @@ sub rename_file {
     return 1;
 }
 
+sub get_domainid_by_name {
+    my $self = shift;
+    my ($dmid) = $self->dbh->selectrow_array('SELECT dmid FROM domain WHERE namespace = ?',
+        undef, $_[0]);
+    return $dmid;
+}
+
 # returns a hash of domains. Key is namespace, value is dmid.
 sub get_all_domains {
     my ($self) = @_;
     my $domains = $self->dbh->selectall_arrayref('SELECT namespace, dmid FROM domain');
     return map { ($_->[0], $_->[1]) } @{$domains || []};
+}
+
+sub get_classid_by_name {
+    my $self = shift;
+    my ($classid) = $self->dbh->selectrow_array('SELECT classid FROM class WHERE dmid = ? AND classname = ?',
+        undef, $_[0], $_[1]);
+    return $classid;
 }
 
 # returns an array of hashrefs, one hashref per row in the 'class' table
@@ -1190,6 +1251,21 @@ sub remove_fidid_from_devid {
                             undef, $fidid, $devid); };
     $self->condthrow;
     return $rv;
+}
+
+# Test if host exists.
+sub get_hostid_by_id {
+    my $self = shift;
+    my ($hostid) = $self->dbh->selectrow_array('SELECT hostid FROM host WHERE hostid = ?',
+        undef, $_[0]);
+    return $hostid;
+}
+
+sub get_hostid_by_name {
+    my $self = shift;
+    my ($hostid) = $self->dbh->selectrow_array('SELECT hostid FROM host WHERE hostname = ?',
+        undef, $_[0]);
+    return $hostid;
 }
 
 # get all hosts from database, returns them as list of hashrefs, hashrefs being the row contents.
@@ -1249,8 +1325,10 @@ sub update_classid {
 sub enqueue_for_replication {
     my ($self, $fidid, $from_devid, $in) = @_;
 
-    $in = 0 unless $in;
-    my $nexttry = $self->unix_timestamp . " + " . int($in);
+    my $nexttry = 0;
+    if ($in) {
+        $nexttry = $self->unix_timestamp . " + " . int($in);
+    }
 
     $self->retry_on_deadlock(sub {
         $self->insert_ignore("INTO file_to_replicate (fid, fromdevid, nexttry) ".
@@ -1441,6 +1519,18 @@ sub create_domain {
     die "failed to make domain";  # FIXME: the above is racy.
 }
 
+sub update_host {
+    my ($self, $hid, $to_update) = @_;
+    my @keys = sort keys %$to_update;
+    return unless @keys;
+    $self->conddup(sub {
+        $self->dbh->do("UPDATE host SET " . join('=?, ', @keys)
+            . "=? WHERE hostid=?", undef, (map { $to_update->{$_} } @keys),
+            $hid);
+    });
+    return 1;
+}
+
 sub update_host_property {
     my ($self, $hostid, $col, $val) = @_;
     $self->conddup(sub {
@@ -1499,6 +1589,8 @@ sub grab_queue_chunk {
     my $tries = 3;
     my $work;
 
+    return 0 unless $self->lock_queue($queue);
+
     my $extwhere = shift || '';
     my $fields = 'fid, nexttry, failcount';
     $fields .= ', ' . $extfields if $extfields;
@@ -1525,6 +1617,7 @@ sub grab_queue_chunk {
         $dbh->do("UPDATE $queue SET nexttry = $ut + 1000 WHERE fid IN ($fidlist)");
         $dbh->commit;
     };
+    $self->unlock_queue($queue);
     if ($self->was_deadlock_error) {
         eval { $dbh->rollback };
         return ();
@@ -1891,6 +1984,11 @@ sub release_lock {
     my ($self, $lockname) = @_;
     die "release_lock not implemented for $self";
 }
+
+# MySQL has an issue where you either get excessive deadlocks, or INSERT's
+# hang forever around some transactions. Use ghetto locking to cope.
+sub lock_queue { 1 }
+sub unlock_queue { 1 }
 
 # returns up to $limit @fidids which are on provided $devid
 sub random_fids_on_device {

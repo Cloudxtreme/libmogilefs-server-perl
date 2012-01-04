@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use MogileFS::ReplicationRequest qw(rr_upgrade);
+use MogileFS::Server;
 use overload '""' => \&as_string;
 
 sub new {
@@ -177,7 +178,7 @@ sub devids {
 
 sub devs {
     my $self = shift;
-    return map { MogileFS::Device->of_devid($_) } $self->devids;
+    return map { Mgd::device_factory()->get_by_id($_) } $self->devids;
 }
 
 sub devfids {
@@ -189,7 +190,7 @@ sub devfids {
 # return FID's class
 sub class {
     my $self = shift;
-    return MogileFS::Class->of_fid($self);
+    return Mgd::class_factory()->get_by_id($self->dmid, $self->classid);
 }
 
 # Get reloaded the next time we're bothered.
@@ -207,7 +208,7 @@ sub devids_meet_policy {
 
     my $polobj = $cls->repl_policy_obj;
 
-    my $alldev = MogileFS::Device->map
+    my $alldev = Mgd::device_factory()->map_by_id
         or die "No global device map";
 
     my @devs = $self->devs;

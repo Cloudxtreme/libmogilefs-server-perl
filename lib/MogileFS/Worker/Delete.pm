@@ -4,6 +4,7 @@ package MogileFS::Worker::Delete;
 use strict;
 use base 'MogileFS::Worker';
 use MogileFS::Util qw(error);
+use MogileFS::Server;
 
 # we select 1000 but only do a random 100 of them, to allow
 # for stateless parallelism
@@ -30,9 +31,6 @@ sub work {
     
     my $old_queue_check   = 0; # next time to check the old queue.
     my $old_queue_backoff = 0; # backoff index
-
-    # wait for one pass of the monitor
-    $self->wait_for_monitor;
 
     while (1) {
         $self->send_to_parent("worker_bored 50 delete");
@@ -162,9 +160,9 @@ sub process_deletes2 {
 
 
         for my $devid (@devids) {
-            my $dev = $devid ? MogileFS::Device->of_devid($devid) : undef;
+            my $dev = $devid ? Mgd::device_factory()->get_by_id($devid) : undef;
             error("deleting fid $fidid, on devid ".($devid || 'NULL')."...") if $Mgd::DEBUG >= 2;
-            unless ($dev && $dev->exists) {
+            unless ($dev) {
                 next;
             }
             if ($dev->dstate->is_perm_dead) {
@@ -310,8 +308,8 @@ sub process_deletes {
         # CASE: devid is marked dead or doesn't exist: consider it deleted on this devid.
         # (Note: we're tolerant of '0' as a devid, due to old buggy version which
         # would sometimes put that in there)
-        my $dev = $devid ? MogileFS::Device->of_devid($devid) : undef;
-        unless ($dev && $dev->exists) {
+        my $dev = $devid ? Mgd::device_factory()->get_by_id($devid) : undef;
+        unless ($dev) {
             $done_with_devid->("devid_doesnt_exist");
             next;
         }
@@ -352,7 +350,6 @@ sub process_deletes {
                                          Timeout => 2);
         unless ($sock) {
             # timeout or something, mark this device as down for now and move on
-            $self->broadcast_host_unreachable($dev->hostid);
             $reschedule_fid->(60 * 60 * 2, "no_sock_to_hostid");
             next;
         }

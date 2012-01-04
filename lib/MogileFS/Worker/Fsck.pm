@@ -10,6 +10,7 @@ use fields (
             );
 use MogileFS::Util qw(every error debug);
 use MogileFS::Config;
+use MogileFS::Server;
 use List::Util ();
 use Time::HiRes ();
 
@@ -36,8 +37,6 @@ sub watchdog_timeout { 120 }
 
 sub work {
     my $self = shift;
-
-    my $run_count = 0;
 
     # this can be CPU-intensive.  let's nice ourselves down.
     POSIX::nice(10);
@@ -76,16 +75,6 @@ sub work {
         $nowish = time();
         local $Mgd::nowish = $nowish;
 
-        # checking doesn't go well if the monitor job hasn't actively started
-        # marking things as being available
-        unless ($self->monitor_has_run) {
-            # only warn on runs after the first.  gives the monitor job some time to work
-            # before we throw a message.
-            debug("waiting for monitor job to complete a cycle before beginning")
-                if $run_count++ > 0;
-            return;
-        }
-
         my $queue_todo = $self->queue_todo('fsck');
         # This counts the same as a $self->still_alive;
         $self->send_to_parent('worker_bored 50 fsck');
@@ -120,7 +109,6 @@ sub work {
                 # some connectivity problem... retry this fid later.
                 # (don't dequeue it)
                 $self->still_alive;
-                sleep 5;
                 next;
             }
             $sto->delete_fid_from_file_to_queue($fid->id, FSCK_QUEUE);
@@ -222,6 +210,12 @@ sub check_fid {
         my ($dfid, $disk_size) = @_;
         if (! defined $disk_size) {
             my $dev  = $dfid->device;
+            # We end up checking is_perm_dead twice, but that's the way the
+            # flow goes...
+            if ($dev->dstate->is_perm_dead) {
+                $err = "needfix";
+                return 0;
+            }
             error("Connectivity problem reaching device " . $dev->id . " on host " . $dev->host->ip . "\n");
             $err = "stalled";
             return 0;
@@ -263,7 +257,7 @@ sub parallel_check_sizes {
 use constant CANT_FIX => 0;
 sub fix_fid {
     my ($self, $fid) = @_;
-    debug(sprintf("Fixing FID %d\n", $fid->id));
+    debug(sprintf("Fixing FID %d", $fid->id));
 
     # This should happen first, since the fid gets awkwardly reloaded...
     $fid->update_devcount;
@@ -284,6 +278,12 @@ sub fix_fid {
         foreach my $dfid (@dfids) {
             my $dev = $dfid->device;
             next if $already_checked{$dev->id}++;
+
+            # Got a dead link, but reaper hasn't cleared it yet?
+            if ($dev->dstate->is_perm_dead) {
+                push @bad_devs, $dev;
+                next;
+            }
 
             my $disk_size = $self->size_on_disk($dfid);
             die "dev " . $dev->id . " unreachable" unless defined $disk_size;
@@ -320,7 +320,7 @@ sub fix_fid {
         @dfids = List::Util::shuffle(
                                      map  { MogileFS::DevFID->new($_, $fid)  }
                                      grep { $_->dstate->should_fsck_search_on }
-                                     MogileFS::Device->devices
+                                     Mgd::device_factory()->get_all
                                      );
         $check_dfids->("desperate");
 
@@ -347,7 +347,7 @@ sub fix_fid {
     # Note: this will reload devids, if they called 'note_on_device'
     # or 'forget_about_device'
     unless ($fid->devids_meet_policy) {
-        $fid->enqueue_for_replication;
+        $fid->enqueue_for_replication(in => 1);
         $fid->fsck_log(EV_RE_REPLICATE);
         return HANDLED;
     }
@@ -432,6 +432,7 @@ sub init_size_checker {
 # else size of file on disk (after HTTP HEAD or mogstored stat)
 sub size_on_disk {
     my ($self, $dfid) = @_;
+    return undef if $dfid->device->dstate->is_perm_dead;
     return $dfid->size_on_disk;
     # Mass checker is disabled for now... doesn't run on our production
     # hosts due to massive gaps in the fids. Instead we make the process

@@ -127,6 +127,18 @@ sub release_lock {
     return $rv;
 }
 
+sub lock_queue {
+    my ($self, $type) = @_;
+    my $lock = $self->get_lock('mfsd:' . $type, 30);
+    return $lock ? 1 : 0;
+}
+
+sub unlock_queue {
+    my ($self, $type) = @_;
+    my $lock = $self->release_lock('mfsd:' . $type);
+    return $lock ? 1 : 0;
+}
+
 # clears everything from the fsck_log table
 # return 1 on success.  die otherwise.
 # Under MySQL 4.1+ this is actually fast.
@@ -191,9 +203,11 @@ sub new_temp {
     my $port = $args{dbport} || 3306;
     my $user = $args{dbuser} || 'root';
     my $pass = $args{dbpass} || '';
+    my $rootuser = $args{dbrootuser} || $args{dbuser} || 'root';
+    my $rootpass = $args{dbrootpass} || $args{dbpass} || '';
     my $sto =
     MogileFS::Store->new_from_dsn_user_pass("DBI:mysql:database=$dbname;host=$host;port=$port",
-        $user, $pass);
+        $rootuser, $rootpass);
 
     my $dbh = $sto->dbh;
     _create_mysql_db($dbh, $dbname);
@@ -201,10 +215,22 @@ sub new_temp {
     # allow MyISAM in the test suite.
     $ENV{USE_UNSAFE_MYSQL} = 1 unless defined $ENV{USE_UNSAFE_MYSQL};
 
-    system("$FindBin::Bin/../mogdbsetup", "--yes", "--dbname=$dbname",
-        "--dbhost=$host", "--dbport=$port", "--dbrootuser=$user",
-        "--dbrootpass=$pass", "--dbuser=$user", "--dbpass=$pass")
-        and die "Failed to run mogdbsetup ($FindBin::Bin/../mogdbsetup).";
+    my @args = ("$FindBin::Bin/../mogdbsetup", "--yes", 
+        "--dbname=$dbname", "--type=MySQL",
+        "--dbhost=$host", "--dbport=$port", 
+        "--dbrootuser=$rootuser", 
+        "--dbuser=$user", );
+    push @args, "--dbpass=$pass" unless $pass eq ''; 
+    push @args, "--dbrootpass=$rootpass" unless $rootpass eq '';
+    system(@args) 
+        and die "Failed to run mogdbsetup (".join(' ',map { "'".$_."'" } @args).").";
+
+    if($user ne $rootuser) {
+        $sto = MogileFS::Store->new_from_dsn_user_pass(
+                "DBI:mysql:database=$dbname;host=$host;port=$port",
+                $user, $pass);
+        $dbh = $sto->dbh;
+    }
 
     $dbh->do("use $dbname");
     return $sto;
@@ -257,7 +283,7 @@ sub create_table {
     # don't alter an existing table up to InnoDB from MyISAM...
     # could be costly.  but on new tables, no problem...
     unless ($existed) {
-        $dbh->do("ALTER TABLE $table TYPE=InnoDB");
+        $dbh->do("ALTER TABLE $table ENGINE=InnoDB");
         warn "DBI reported an error of: '" . $dbh->errstr . "' when trying to " .
             "alter table type of $table to InnoDB\n" if $dbh->err;
     }
@@ -370,6 +396,15 @@ sub upgrade_add_file_to_queue_arg {
     my $self = shift;
     unless ($self->column_type("file_to_queue", "arg")) {
         $self->dowell("ALTER TABLE file_to_queue ADD COLUMN arg TEXT");
+    }
+}
+
+sub upgrade_modify_device_size {
+    my $self = shift;
+    for my $col ('mb_total', 'mb_used') {
+        if ($self->column_type("device", $col) =~ m/mediumint/i) {
+            $self->dowell("ALTER TABLE device MODIFY COLUMN $col INT UNSIGNED");
+        }
     }
 }
 
