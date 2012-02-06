@@ -1,3 +1,9 @@
+libmogilefs-server-perl (2.57-1) lucid; urgency=low
+
+  * New upstream version
+
+ -- stuart <stuart@we7.com>  Mon, 06 Feb 2012 15:22:56 +0000
+
 libmogilefs-server-perl (2.55-1) lucid; urgency=low
 
   * New upstream version, yes we've skipped a load again.
