@@ -42,7 +42,7 @@ if [ "x$START" != "xYES" ]
   exit 0
 fi
 
-if [ "$MOGILEFSD_RUNASUSER" == "" ]
+if [ "x$MOGILEFSD_RUNASUSER" == "x" ]
   then
 
 	echo "Cannot determine user to run as, even though defaults file ($DEFAULTS) exists."
