@@ -21,6 +21,7 @@ use constant DEVICE_SUMMARY_CACHE_TIMEOUT => 15;
 
 my %conf;
 my %server_settings;
+my $has_cached_settings = 0;
 sub set_config {
     shift if @_ == 3;
     my ($k, $v) = @_;
@@ -28,7 +29,7 @@ sub set_config {
     # if a child, propagate to parent
     if (my $worker = MogileFS::ProcManager->is_child) {
         $worker->send_to_parent(":set_config_from_child $k $v");
-    } else {
+    } elsif (defined $v) {
         MogileFS::ProcManager->send_to_all_children(":set_config_from_parent $k $v");
     }
 
@@ -271,6 +272,7 @@ sub server_setting {
 
 sub cache_server_setting {
     my ($class, $key, $val) = @_;
+    $has_cached_settings++ unless $has_cached_settings;
     if (! defined $val) {
         delete $server_settings{$key}
             if exists $server_settings{$key};
@@ -279,7 +281,11 @@ sub cache_server_setting {
 }
 
 sub server_setting_cached {
-    my ($class, $key) = @_;
+    my ($class, $key, $fallback) = @_;
+    $fallback = 1 unless (defined $fallback);
+    if (!$has_cached_settings && $fallback) {
+        return MogileFS::Config->server_setting($key);
+    }
     return $server_settings{$key};
 }
 
@@ -288,15 +294,18 @@ my $last_memc_server_fetch = 0;
 my $have_memc_module = eval "use Cache::Memcached; 1;";
 sub memcache_client {
     return undef unless $have_memc_module;
-    $memc ||= Cache::Memcached->new;
 
     # only reload the server list every 30 seconds
     my $now = time();
     return $memc if $last_memc_server_fetch > $now - 30;
 
-    my @servers = split(/\s*,\s*/, MogileFS::Config->server_setting_cached("memcache_servers") || "");
-    $memc->set_servers(\@servers);
+    my @servers = grep(/:\d+$/, split(/\s*,\s*/, MogileFS::Config->server_setting_cached("memcache_servers") || ""));
     $last_memc_server_fetch = $now;
+
+    return ($memc = undef) unless @servers;
+
+    $memc ||= Cache::Memcached->new;
+    $memc->set_servers(\@servers);
 
     return $memc;
 }
@@ -308,6 +317,7 @@ sub hostname {
 
 sub server_setting_is_readable {
     my ($class, $key) = @_;
+    return 1 if $key eq 'fsck_checksum';
     return 0 if $key =~ /^fsck_/;
     return 1;
 }
@@ -355,25 +365,29 @@ sub server_setting_is_writable {
 
     # let slave settings go through unmodified, for now.
     if ($key =~ /^slave_/) { return $del_if_blank };
-    if ($key eq "enable_rebalance") { return $bool };
+    if ($key eq "skip_devcount") { return $bool };
+    if ($key eq "skip_mkcol") { return $bool };
+    if ($key eq "case_sensitive_list_keys") { return $bool };
     if ($key eq "memcache_servers") { return $any  };
+    if ($key eq "memcache_ttl") { return $num };
     if ($key eq "internal_queue_limit") { return $num };
 
     # ReplicationPolicy::MultipleNetworks
     if ($key eq 'network_zones') { return $any };
     if ($key =~ /^zone_/) { return $valid_netmask_list };
 
-    if ($key eq "rebalance_policy") { return sub {
-        my $v = shift;
-        return undef unless $v;
-        # TODO: actually load the provided class and test if it loads?
-        die "Doesn't match acceptable format" unless
-            $v =~ /^[\w:\-]+$/;
-        return $v;
-    }}
-
     # should probably restrict to (\d+)
     if ($key =~ /^queue_/) { return $any };
+
+    if ($key eq "fsck_checksum") {
+        return sub {
+            my $v = shift;
+            return "off" if $v eq "off";
+            return undef if $v eq "class";
+            return $v if MogileFS::Checksum->valid_alg($v);
+            die "Not a valid checksum algorithm";
+        }
+    }
 
     return 0;
 }

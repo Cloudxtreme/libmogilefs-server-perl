@@ -17,7 +17,7 @@ BEGIN {
     eval "sub TESTING () { $testing }";
 }
 
-my @observed_fields = qw/observed_state utilization/;
+my @observed_fields = qw/observed_state utilization reject_bad_md5/;
 my @fields = (qw/hostid status weight mb_total mb_used mb_asof devid/,
     @observed_fields);
 
@@ -89,21 +89,27 @@ sub observed_utilization {
     return $self->{utilization};
 }
 
+sub host_ok {
+    my $host = $_[0]->host;
+    return ($host && $host->observed_reachable);
+}
+
 sub observed_writeable {
     my $self = shift;
-    return 0 unless $self->{observed_state} && $self->{observed_state} eq 'writeable';
-    my $host = $self->host or return 0;
-    return 0 unless $host->observed_reachable;
-    return 1;
+    return 0 unless $self->host_ok;
+    return $self->{observed_state} && $self->{observed_state} eq 'writeable';
 }
 
 sub observed_readable {
     my $self = shift;
+    return 0 unless $self->host_ok;
     return $self->{observed_state} && $self->{observed_state} eq 'readable';
 }
 
 sub observed_unreachable {
     my $self = shift;
+    # host is unreachability implies device unreachability
+    return 1 unless $self->host_ok;
     return $self->{observed_state} && $self->{observed_state} eq 'unreachable';
 }
 
@@ -119,8 +125,14 @@ sub can_delete_from {
     return $_[0]->dstate->can_delete_from;
 }
 
+# this method is for Monitor, other workers should use should_read_from
 sub can_read_from {
-    return $_[0]->dstate->can_read_from;
+    return $_[0]->host->alive && $_[0]->dstate->can_read_from;
+}
+
+# this is the only method a worker should call for checking for readability
+sub should_read_from {
+    return $_[0]->can_read_from && ($_[0]->observed_readable || $_[0]->observed_writeable);
 }
 
 # FIXME: Is there a (unrelated to this code) bug where new files aren't tested
@@ -131,7 +143,7 @@ sub should_get_new_files {
 
     return 0 unless $dstate->should_get_new_files;
     return 0 unless $self->observed_writeable;
-    return 0 unless $self->host->should_get_new_files;
+    return 0 unless $self->host->alive;
     # have enough disk space? (default: 100MB)
     my $min_free = MogileFS->config("min_free_space");
     return 0 if $self->{mb_total} &&
@@ -173,7 +185,7 @@ my $dir_made_lastclean = 0;
 # returns 1 on success, 0 on failure
 sub create_directory {
     my ($self, $uri) = @_;
-    return 1 if $self->doesnt_know_mkcol;
+    return 1 if $self->doesnt_know_mkcol || MogileFS::Config->server_setting_cached('skip_mkcol');
 
     # rfc2518 says we "should" use a trailing slash. Some servers
     # (nginx) appears to require it.
@@ -299,6 +311,10 @@ sub set_observed_utilization {
 # Remove this in 2012.
 sub devices {
     return Mgd::device_factory()->get_all;
+}
+
+sub reject_bad_md5 {
+    return $_[0]->{reject_bad_md5};
 }
 
 1;

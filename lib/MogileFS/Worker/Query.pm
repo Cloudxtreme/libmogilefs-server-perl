@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 use base 'MogileFS::Worker';
-use fields qw(querystarttime reqid);
+use fields qw(querystarttime reqid callid);
 use MogileFS::Util qw(error error_code first weighted_list
                       device_state eurl decode_url_args);
 use MogileFS::HTTPFile;
@@ -20,6 +20,7 @@ sub new {
 
     $self->{querystarttime} = undef;
     $self->{reqid}          = undef;
+    $self->{callid}         = undef;
     return $self;
 }
 
@@ -100,13 +101,14 @@ sub process_line {
 
     # fallback to normal command handling
     if ($line =~ /^(\w+)\s*(.*)/) {
-        my ($cmd, $args) = ($1, $2);
+        my ($cmd, $orig_args) = ($1, $2);
         $cmd = lc($cmd);
 
         no strict 'refs';
         my $cmd_handler = *{"cmd_$cmd"}{CODE};
+        my $args = decode_url_args(\$orig_args);
+        $self->{callid} = $args->{callid};
         if ($cmd_handler) {
-            my $args = decode_url_args(\$args);
             local $MogileFS::REQ_altzone = ($args->{zone} && $args->{zone} eq 'alt');
             eval {
                 $cmd_handler->($self, $args);
@@ -213,6 +215,8 @@ sub cmd_create_open {
     my $dmid = $args->{dmid};
     my $key = $args->{key} || "";
     my $multi = $args->{multi_dest} ? 1 : 0;
+    my $size = $args->{size} || undef; # Size is optional at create time,
+                                       # but used to grep devices if available
 
     # optional profiling of stages, if $args->{debug_profile}
     my @profpoints;  # array of [point,hires-starttime]
@@ -249,6 +253,10 @@ sub cmd_create_open {
 
     unless (MogileFS::run_global_hook('cmd_create_open_order_devices', [Mgd::device_factory()->get_all], \@devices)) {
         @devices = sort_devs_by_freespace(Mgd::device_factory()->get_all);
+    }
+
+    if ($size) {
+        @devices = grep { ($_->mb_free * 1024*1024) > $size } @devices;
     }
 
     # find suitable device(s) to put this file on.
@@ -355,6 +363,12 @@ sub cmd_create_close {
     my $fidid = $args->{fid}    or return $self->err_line("no_fid");
     my $devid = $args->{devid}  or return $self->err_line("no_devid");
     my $path  = $args->{path}   or return $self->err_line("no_path");
+    my $checksum = $args->{checksum};
+
+    if ($checksum) {
+        $checksum = eval { MogileFS::Checksum->from_string($fidid, $checksum) };
+        return $self->err_line("invalid_checksum_format") if $@;
+    }
 
     my $fid  = MogileFS::FID->new($fidid);
     my $dfid = MogileFS::DevFID->new($devid, $fid);
@@ -391,7 +405,8 @@ sub cmd_create_close {
     }
 
     # get size of file and verify that it matches what we were given, if anything
-    my $size = MogileFS::HTTPFile->at($path)->size;
+    my $httpfile = MogileFS::HTTPFile->at($path);
+    my $size = $httpfile->size;
 
     # size check is optional? Needs to support zero byte files.
     $args->{size} = -1 unless $args->{size};
@@ -406,6 +421,20 @@ sub cmd_create_close {
     if ($args->{size} > -1 && ($args->{size} != $size)) {
         $failed->();
         return $self->err_line("size_mismatch", "Expected: $args->{size}; actual: $size; path: $path")
+    }
+
+    # checksum validation is optional as it can be very expensive
+    # However, we /always/ verify it if the client wants us to, even
+    # if the class does not enforce or store it.
+    if ($checksum && $args->{checksumverify}) {
+        my $alg = $checksum->hashname;
+        my $actual = $httpfile->digest($alg, sub { $self->still_alive });
+        if ($actual ne $checksum->{checksum}) {
+            $failed->();
+            $actual = "$alg:" . unpack("H*", $actual);
+            return $self->err_line("checksum_mismatch",
+                           "Expected: $checksum; actual: $actual; path: $path");
+        }
     }
 
     # see if we have a fid for this key already
@@ -424,31 +453,29 @@ sub cmd_create_close {
     # insert file_on row
     $dfid->add_to_db;
 
+    $checksum->maybe_save($dmid, $trow->{classid}) if $checksum;
+
     $sto->replace_into_file(
                             fidid   => $fidid,
                             dmid    => $dmid,
                             key     => $key,
                             length  => $size,
                             classid => $trow->{classid},
+                            devcount => 1,
                             );
 
     # mark it as needing replicating:
     $fid->enqueue_for_replication();
 
-    if ($fid->update_devcount) {
-        # call the hook - if this fails, we need to back the file out
-        my $rv = MogileFS::run_global_hook('file_stored', $args);
-        if (defined $rv && ! $rv) { # undef = no hooks, 1 = success, 0 = failure
-            $fid->delete;
-            return $self->err_line("plugin_aborted");
-        }
-
-        # all went well
-        return $self->ok_line;
-    } else {
-        # FIXME: handle this better
-        return $self->err_line("db_error");
+    # call the hook - if this fails, we need to back the file out
+    my $rv = MogileFS::run_global_hook('file_stored', $args);
+    if (defined $rv && ! $rv) { # undef = no hooks, 1 = success, 0 = failure
+        $fid->delete;
+        return $self->err_line("plugin_aborted");
     }
+
+    # all went well, we would've hit condthrow on DB errors
+    return $self->ok_line;
 }
 
 sub cmd_updateclass {
@@ -561,6 +588,15 @@ sub cmd_file_debug {
     }
     $ret->{devids} = join(',', @devids) if @devids;
 
+    # Always look for a checksum
+    my $checksum = Mgd::get_store()->get_checksum($fidid);
+    if ($checksum) {
+        $checksum = MogileFS::Checksum->new($checksum);
+        $ret->{checksum} = $checksum->info;
+    } else {
+        $ret->{checksum} = 'NONE';
+    }
+
     # Return file row (if found) and all other data.
     my %toret = (fid => $fid, tempfile => $tfile, replqueue => $repl,
         delqueue => $del, rebqueue => $reb, fsckqueue => $fsck);
@@ -600,8 +636,17 @@ sub cmd_file_info {
     my $ret = {};
     $ret->{fid}      = $fid->id;
     $ret->{domain}   = Mgd::domain_factory()->get_by_id($fid->dmid)->name;
-    $ret->{class}    = Mgd::class_factory()->get_by_id($fid->dmid,
-        $fid->classid)->name;
+    my $class = Mgd::class_factory()->get_by_id($fid->dmid, $fid->classid);
+    $ret->{class}    = $class->name;
+    if ($class->{hashtype}) {
+        my $checksum = Mgd::get_store()->get_checksum($fid->id);
+        if ($checksum) {
+            $checksum = MogileFS::Checksum->new($checksum);
+            $ret->{checksum} = $checksum->info;
+        } else {
+            $ret->{checksum} = "MISSING";
+        }
+    }
     $ret->{key}      = $key;
     $ret->{'length'} = $fid->length;
     $ret->{devcount} = $fid->devcount;
@@ -816,6 +861,7 @@ sub cmd_delete_domain {
 
     my $err = error_code($@);
     return $self->err_line('domain_has_files') if $err eq "has_files";
+    return $self->err_line('domain_has_classes') if $err eq "has_classes";
     return $self->err_line("failure");
 }
 
@@ -838,6 +884,13 @@ sub cmd_create_class {
             MogileFS::ReplicationPolicy->new_from_policy_string($replpolicy);
         };
         return $self->err_line('invalid_replpolicy', $@) if $@;
+    }
+
+    my $hashtype = $args->{hashtype};
+    if ($hashtype && $hashtype ne 'NONE') {
+        my $tmp = $MogileFS::Checksum::NAME2TYPE{$hashtype};
+        return $self->err_line('invalid_hashtype') unless $tmp;
+        $hashtype = $tmp;
     }
 
     my $sto = Mgd::get_store();
@@ -866,6 +919,10 @@ sub cmd_create_class {
     # don't erase an existing replpolicy if we're not setting a new one.
     $sto->update_class_replpolicy(dmid => $dmid, classid => $clsid,
         replpolicy => $replpolicy) if $replpolicy;
+    if ($hashtype) {
+        $sto->update_class_hashtype(dmid => $dmid, classid => $clsid,
+            hashtype => $hashtype eq 'NONE' ? undef : $hashtype);
+    }
 
     # return success
     return $self->cmd_clear_cache({ class => $class, mindevcount => $mindevcount, domain => $domain });
@@ -990,6 +1047,7 @@ sub cmd_get_domains {
             $ret->{"domain${dm_n}class${cl_n}mindevcount"} = $cl->mindevcount;
             $ret->{"domain${dm_n}class${cl_n}replpolicy"}  =
                 $cl->repl_policy_string;
+            $ret->{"domain${dm_n}class${cl_n}hashtype"} = $cl->hashtype_string;
         }
         $ret->{"domain${dm_n}classes"} = $cl_n;
     }
@@ -1003,13 +1061,14 @@ sub cmd_get_paths {
     my $args = shift;
 
     # memcache mappings are as follows:
-    #  mogfid:<dmid>:<dkey> -> fidid     (and TODO: invalidate this when key is replaced)
-    #  mogdevids:<fidid>    -> \@devids  (and TODO: invalidate when the replication or deletion is run!)
+    #  mogfid:<dmid>:<dkey> -> fidid
+    #  mogdevids:<fidid>    -> \@devids  (and TODO: invalidate when deletion is run!)
 
     # if you specify 'noverify', that means a correct answer isn't needed and memcache can
     # be used.
-    my $use_memc = $args->{noverify};
-    my $memc     = $use_memc ? MogileFS::Config->memcache_client : undef;
+    my $memc          = MogileFS::Config->memcache_client;
+    my $get_from_memc = $memc && $args->{noverify};
+    my $memcache_ttl  = MogileFS::Config->server_setting_cached("memcache_ttl") || 3600;
 
     # validate domain for plugins
     $args->{dmid} = $self->check_domain($args)
@@ -1033,7 +1092,7 @@ sub cmd_get_paths {
     my $fid;
     my $need_fid_in_memcache = 0;
     my $mogfid_memkey = "mogfid:$args->{dmid}:$key";
-    if ($memc) {
+    if ($get_from_memc) {
         if (my $fidid = $memc->get($mogfid_memkey)) {
             $fid = MogileFS::FID->new($fidid);
         } else {
@@ -1048,7 +1107,7 @@ sub cmd_get_paths {
     }
 
     # add to memcache, if needed.  for an hour.
-    $memc->add($mogfid_memkey, $fid->id, 3600) if $need_fid_in_memcache;
+    $memc->set($mogfid_memkey, $fid->id, $memcache_ttl ) if $need_fid_in_memcache || ($memc && !$get_from_memc);
 
     my $dmap = Mgd::device_factory()->map_by_id;
 
@@ -1060,7 +1119,7 @@ sub cmd_get_paths {
     my @fid_devids;
     my $need_devids_in_memcache = 0;
     my $devid_memkey = "mogdevids:" . $fid->id;
-    if ($memc) {
+    if ($get_from_memc) {
         if (my $list = $memc->get($devid_memkey)) {
             @fid_devids = @$list;
         } else {
@@ -1071,7 +1130,7 @@ sub cmd_get_paths {
         Mgd::get_store()->slaves_ok(sub {
             @fid_devids = $fid->devids;
         });
-        $memc->add($devid_memkey, \@fid_devids, 3600) if $need_devids_in_memcache;
+        $memc->set($devid_memkey, \@fid_devids, $memcache_ttl ) if $need_devids_in_memcache || ($memc && !$get_from_memc);
     }
 
     my @devices = map { $dmap->{$_} } @fid_devids;
@@ -1084,18 +1143,18 @@ sub cmd_get_paths {
     # keep one partially-bogus path around just in case we have nothing else to send.
     my $backup_path;
 
+    # files on devices set for drain may disappear soon.
+    my @drain_paths;
+
     # construct result paths
     foreach my $dev (@sorted_devs) {
-        next unless $dev && ($dev->can_read_from);
+        next unless $dev && $dev->host;
 
-        my $host = $dev->host;
-        next unless $dev && $host;
         my $dfid = MogileFS::DevFID->new($dev, $fid);
         my $path = $dfid->get_url;
-        my $currently_down =
-            $host->observed_unreachable || $dev->observed_unreachable;
+        my $currently_up = $dev->should_read_from;
 
-        if ($currently_down) {
+        if (! $currently_up) {
             $backup_path = $path;
             next;
         }
@@ -1106,9 +1165,24 @@ sub cmd_get_paths {
             $args->{noverify}    ||
             $dfid->size_matches;
 
+        if ($dev->dstate->should_drain) {
+            push @drain_paths, $path;
+            next;
+        }
+
         my $n = ++$ret->{paths};
         $ret->{"path$n"} = $path;
         last if $n == $pathcount;   # one verified, one likely seems enough for now.  time will tell.
+    }
+
+    # deprioritize devices set for drain, they could disappear soon...
+    # Clients /should/ try to use lower-numbered paths first to avoid this.
+    if ($ret->{paths} < $pathcount && @drain_paths) {
+        foreach my $path (@drain_paths) {
+            my $n = ++$ret->{paths};
+            $ret->{"path$n"} = $path;
+            last if $n == $pathcount;
+        }
     }
 
     # use our backup path if all else fails
@@ -1250,12 +1324,8 @@ sub cmd_edit_file {
     @list = grep {
         my $devid = $_;
         my $dev = $dmap->{$devid};
-        my $host = $dev ? $dev->host : undef;
 
-        $dev
-        && $host
-        && $dev->can_read_from
-        && !($host->observed_unreachable || $dev->observed_unreachable);
+        $dev && $dev->should_read_from;
     } @list;
 
     # Take first remaining device from list
@@ -1425,7 +1495,8 @@ sub cmd_fsck_start {
     my $intss       = sub { MogileFS::Config->server_setting($_[0]) || 0 };
     my $checked_fid = $intss->("fsck_highest_fid_checked");
     my $final_fid   = $intss->("fsck_fid_at_end");
-    if ($checked_fid && $final_fid && $checked_fid >= $final_fid) {
+    if (($checked_fid && $final_fid && $checked_fid >= $final_fid) ||
+        (!$final_fid && !$checked_fid)) {
         $self->_do_fsck_reset or return $self->err_line;
     }
 
@@ -1654,6 +1725,7 @@ sub ok_line {
     my $id = defined $self->{reqid} ? "$self->{reqid} " : '';
 
     my $args = shift || {};
+    $args->{callid} = $self->{callid} if defined $self->{callid};
     my $argline = join('&', map { eurl($_) . "=" . eurl($args->{$_}) } keys %$args);
     $self->send_to_parent("${id}${delay}OK $argline");
     return 1;
@@ -1714,8 +1786,9 @@ sub err_line {
     }
 
     my $id = defined $self->{reqid} ? "$self->{reqid} " : '';
+    my $callid = defined $self->{callid} ? ' ' . eurl($self->{callid}) : '';
 
-    $self->send_to_parent("${id}${delay}ERR $err_code " . eurl($err_text));
+    $self->send_to_parent("${id}${delay}ERR $err_code " . eurl($err_text) . $callid);
     return 0;
 }
 
