@@ -12,12 +12,8 @@ use MogileFS::Server;
 use MogileFS::Util qw(error every debug);
 use MogileFS::Config;
 use MogileFS::ReplicationRequest qw(rr_upgrade);
-
-# setup the value used in a 'nexttry' field to indicate that this item will never
-# actually be tried again and require some sort of manual intervention.
-use constant ENDOFTIME => 2147483647;
-
-sub end_of_time { ENDOFTIME; }
+use Digest;
+use MIME::Base64 qw(encode_base64);
 
 sub new {
     my ($class, $psock) = @_;
@@ -138,7 +134,7 @@ sub replicate_using_torepl_table {
             # special; update to a time that won't happen again,
             # as we've encountered a scenario in which case we're
             # really hosed
-            $sto->reschedule_file_to_replicate_absolute($fid, ENDOFTIME);
+            $sto->reschedule_file_to_replicate_absolute($fid, $sto->end_of_time);
         } elsif ($type eq "offset") {
             $sto->reschedule_file_to_replicate_relative($fid, $delay+0);
         } else {
@@ -168,10 +164,10 @@ sub replicate_using_torepl_table {
         # First one we can delete from, we try to rebalance away from.
         for (@devs) {
             my $dev = Mgd::device_factory()->get_by_id($_);
-            # Not positive 'can_read_from' needs to be here.
+            # Not positive 'should_read_from' needs to be here.
             # We must be able to delete off of this dev so the fid can
             # move.
-            if ($dev->can_delete_from && $dev->can_read_from) {
+            if ($dev->can_delete_from && $dev->should_read_from) {
                 $devfid = MogileFS::DevFID->new($dev, $f);
                 last;
             }
@@ -371,7 +367,7 @@ sub replicate {
         if ($d->dstate->should_have_files && ! $mask_devids->{$devid}) {
             push @on_devs_tellpol, $d;
         }
-        if ($d->dstate->can_read_from) {
+        if ($d->should_read_from) {
             push @on_up_devid, $devid;
         }
     }
@@ -473,6 +469,7 @@ sub replicate {
         }
 
         my $worker = MogileFS::ProcManager->is_child or die;
+        my $digest = Digest->new($cls->hashname) if $cls->hashtype;
         my $rv = http_copy(
                            sdevid       => $sdevid,
                            ddevid       => $ddevid,
@@ -481,6 +478,7 @@ sub replicate {
                            expected_len => undef,  # FIXME: get this info to pass along
                            errref       => \$copy_err,
                            callback     => sub { $worker->still_alive; },
+                           digest       => $digest,
                            );
         die "Bogus error code: $copy_err" if !$rv && $copy_err !~ /^(?:src|dest)_error$/;
 
@@ -501,6 +499,9 @@ sub replicate {
 
         my $dfid = MogileFS::DevFID->new($ddevid, $fid);
         $dfid->add_to_db;
+        if ($digest && !$fid->checksum) {
+            $sto->set_checksum($fidid, $cls->hashtype, $digest->digest);
+        }
 
         push @on_devs, $devs->{$ddevid};
         push @on_devs_tellpol, $devs->{$ddevid};
@@ -524,7 +525,7 @@ sub replicate {
 # copies a file from one Perlbal to another utilizing HTTP
 sub http_copy {
     my %opts = @_;
-    my ($sdevid, $ddevid, $fid, $rfid, $expected_clen, $intercopy_cb, $errref) =
+    my ($sdevid, $ddevid, $fid, $rfid, $expected_clen, $intercopy_cb, $errref, $digest) =
         map { delete $opts{$_} } qw(sdevid
                                     ddevid
                                     fid
@@ -532,9 +533,19 @@ sub http_copy {
                                     expected_len
                                     callback
                                     errref
+                                    digest
                                     );
     die if %opts;
 
+    my $content_md5 = '';
+    my $fid_checksum = $rfid->checksum;
+    if ($fid_checksum && $fid_checksum->hashname eq "MD5") {
+        # some HTTP servers may be able to verify Content-MD5 on PUT
+        # and reject corrupted requests.  no HTTP server should reject
+        # a request for an unrecognized header
+        my $b64digest = encode_base64($fid_checksum->{checksum}, "");
+        $content_md5 = "\r\nContent-MD5: $b64digest";
+    }
 
     $intercopy_cb ||= sub {};
 
@@ -626,7 +637,7 @@ sub http_copy {
     # open target for put
     my $dsock = IO::Socket::INET->new(PeerAddr => $dhostip, PeerPort => $dport, Timeout => 2)
         or return $dest_error->("Unable to create dest socket to $dhostip:$dport for $dpath");
-    $dsock->write("PUT $dpath HTTP/1.0\r\nContent-length: $clen\r\n\r\n")
+    $dsock->write("PUT $dpath HTTP/1.0\r\nContent-length: $clen$content_md5\r\n\r\n")
         or return $dest_error->("Unable to write data to $dpath on $dhostip:$dport");
     return $dest_error->("Pipe closed during write to $dpath on $dhostip:$dport")
         if $pipe_closed;
@@ -642,12 +653,22 @@ sub http_copy {
             # now we've read in $bytes bytes
             $remain -= $bytes;
             $bytes_to_read = $remain if $remain < $bytes_to_read;
+            $digest->add($data) if $digest;
 
-            my $wbytes = $dsock->send($data);
-            $written  += $wbytes;
-            return $dest_error->("Error: wrote $wbytes; expected to write $bytes; failed putting to $dpath")
-                unless $wbytes == $bytes;
-            $intercopy_cb->();
+            my $data_len = $bytes;
+            my $data_off = 0;
+            while (1) {
+                my $wbytes = syswrite($dsock, $data, $data_len, $data_off);
+                unless (defined $wbytes) {
+                    return $dest_error->("Error: syswrite failed after $written bytes with: $!; failed putting to $dpath");
+                }
+                $written += $wbytes;
+                $intercopy_cb->();
+                last if ($data_len == $wbytes);
+
+                $data_len -= $wbytes;
+                $data_off += $wbytes;
+            }
 
             die if $bytes_to_read < 0;
             next if $bytes_to_read;
@@ -661,10 +682,40 @@ sub http_copy {
     return $dest_error->("closed pipe writing to destination")     if $pipe_closed;
     return $src_error->("error reading midway through source: $!") unless $finished_read;
 
+    # callee will want this digest, too, so clone as "digest" is destructive
+    $digest = $digest->clone->digest if $digest;
+
+    if ($fid_checksum) {
+        if ($digest ne $fid_checksum->{checksum}) {
+            my $expect = $fid_checksum->hexdigest;
+            $digest = unpack("H*", $digest);
+            return $src_error->("checksum mismatch on GET: expected: $expect actual: $digest");
+        }
+    }
+
     # now read in the response line (should be first line)
     my $line = <$dsock>;
     if ($line =~ m!^HTTP/\d+\.\d+\s+(\d+)!) {
-        return 1 if $1 >= 200 && $1 <= 299;
+        if ($1 >= 200 && $1 <= 299) {
+            if ($digest) {
+                my $alg = $rfid->class->hashname;
+
+                if ($ddev->{reject_bad_md5} && ($alg eq "MD5")) {
+                    # dest device would've rejected us with a error,
+                    # no need to reread the file
+                    return 1;
+                }
+                my $durl = "http://$dhostip:$dport$dpath";
+                my $httpfile = MogileFS::HTTPFile->at($durl);
+                my $actual = $httpfile->digest($alg, $intercopy_cb);
+                if ($actual ne $digest) {
+                    my $expect = unpack("H*", $digest);
+                    $actual = unpack("H*", $actual);
+                    return $dest_error->("checksum mismatch on PUT, expected: $expect actual: $digest");
+                }
+            }
+            return 1;
+        }
         return $dest_error->("Got HTTP status code $1 PUTing to http://$dhostip:$dport$dpath");
     } else {
         return $dest_error->("Error: HTTP response line not recognized writing to http://$dhostip:$dport$dpath: $line");

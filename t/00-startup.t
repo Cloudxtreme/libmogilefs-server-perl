@@ -23,9 +23,7 @@ find_mogclient_or_skip();
 # etc
 
 my $sto = eval { temp_store(); };
-if ($sto) {
-    plan tests => 73;
-} else {
+if (!$sto) {
     plan skip_all => "Can't create temporary test database: $@";
     exit 0;
 }
@@ -88,6 +86,12 @@ ok($be->do_request("test", {}), "test ping again worked");
 ok($tmptrack->mogadm("domain", "add", "todie"), "created todie domain");
 ok($tmptrack->mogadm("domain", "delete", "todie"), "delete todie domain");
 ok(!$tmptrack->mogadm("domain", "delete", "todie"), "didn't delete todie domain again");
+
+ok($tmptrack->mogadm("domain", "add", "hasclass"), "created hasclass domain");
+ok($tmptrack->mogadm("class", "add", "hasclass", "nodel"), "created nodel class");
+ok(!$tmptrack->mogadm("domain", "delete", "hasclass"), "didn't delete hasclass domain");
+ok($tmptrack->mogadm("class", "delete", "hasclass", "nodel"), "created nodel class");
+ok($tmptrack->mogadm("domain", "delete", "hasclass"), "didn't delete hasclass domain");
 
 ok($tmptrack->mogadm("domain", "add", "testdom"), "created test domain");
 ok($tmptrack->mogadm("class", "add", "testdom", "1copy", "--mindevcount=1"), "created 1copy class in testdom");
@@ -347,6 +351,22 @@ foreach my $t (qw(file file_on file_to_delete)) {
     # TODO: test double closing, etc.
 }
 
+# give an explicit fid, to prevent bugs like the reason behind
+# commit ac5534a0c3d046e660fa7581c9173857f182bd81
+# This is functionality is a bad idea otherwise.
+{
+    my $expfid = 2147483632;
+    my $opts = { fid => $expfid };
+    my $fh = $mogc->new_file("explicit_fid", "1copy", 2, $opts);
+    die "Error: " . $mogc->errstr unless $fh;
+    ok((print $fh "hi" ), "wrote 2 bytes");
+    ok(close($fh), "closed file");
+    my $info = $mogc->file_info("explicit_fid");
+
+    is($info->{devcount}, 1, "devcount is 1");
+    is($info->{fid}, $opts->{fid}, "explicit fid is correctly set");
+}
+
 sub try_for {
     my ($tries, $code) = @_;
     for (1..$tries) {
@@ -355,3 +375,5 @@ sub try_for {
     }
     return 0;
 }
+
+done_testing();

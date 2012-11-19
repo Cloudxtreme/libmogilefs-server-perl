@@ -4,6 +4,7 @@ use strict;
 use base 'MogileFS::Worker';
 use fields (
             'opt_nostat',          # bool: do we trust mogstoreds? skipping size stats?
+            'opt_checksum',        # (class|off|MD5) checksum mode
             );
 use MogileFS::Util qw(every error debug);
 use MogileFS::Config;
@@ -25,6 +26,9 @@ use constant EV_START_SEARCH     => "SRCH";
 use constant EV_FOUND_FID        => "FOND";
 use constant EV_RE_REPLICATE     => "REPL";
 use constant EV_BAD_COUNT        => "BCNT";
+use constant EV_BAD_CHECKSUM     => "BSUM";
+use constant EV_NO_CHECKSUM      => "NSUM";
+use constant EV_MULTI_CHECKSUM   => "MSUM";
 
 use POSIX ();
 
@@ -64,6 +68,12 @@ sub work {
         return unless @fids;
 
         $self->{opt_nostat} = MogileFS::Config->server_setting('fsck_opt_policy_only')     || 0;
+        my $alg = MogileFS::Config->server_setting_cached("fsck_checksum");
+        if (defined($alg) && $alg eq "off") {
+            $self->{opt_checksum} = "off";
+        } else {
+            $self->{opt_checksum} = MogileFS::Checksum->valid_alg($alg) ? $alg : 0;
+        }
         MogileFS::FID->mass_load_devids(@fids);
 
         # don't sleep in loop, next round, since we found stuff to work on
@@ -127,12 +137,12 @@ sub check_fid {
     }
 
     # This is a simple fixup case
-    unless (scalar($fid->devids) == $fid->devcount) {
-        # log a bad count
-        $fid->fsck_log(EV_BAD_COUNT);
+    # If we got here, we already know we have no policy violation and
+    # don't need to call $fix->() to just fix a devcount
+    $self->maybe_fix_devcount($fid);
 
-        # TODO: We could fix this without a complete fix pass
-        # $fid->update_devcount();
+    # missing checksum row
+    if ($fid->class->hashtype && ! $fid->checksum) {
         return $fix->();
     }
 
@@ -140,6 +150,10 @@ sub check_fid {
     # locations are actually there).  in the fast case, all we do is
     # check the replication policy, which is already done, so finish.
     return HANDLED if $self->{opt_nostat};
+
+    if ($self->{opt_checksum} && $self->{opt_checksum} ne "off") {
+        return $fix->();
+    }
 
     # stat each device to see if it's still there.  on first problem,
     # stop and go into the slow(er) fix function.
@@ -165,7 +179,8 @@ sub check_fid {
     });
 
     if ($rv) {
-        return HANDLED;
+        return ($fid->class->hashtype && !($self->{opt_checksum} && $self->{opt_checksum} eq "off"))
+            ? $fix->() : HANDLED;
     } elsif ($err eq "stalled") {
         return STALLED;
     } elsif ($err eq "needfix") {
@@ -180,7 +195,7 @@ sub parallel_check_sizes {
     # serial, for now: (just prepping for future parallel future,
     # getting interface right)
     foreach my $df (@$dflist) {
-        my $size = $self->size_on_disk($df);
+        my $size = $df->size_on_disk;
         return 0 unless $cb->($df, $size);
     }
     return 1;
@@ -197,9 +212,6 @@ sub fix_fid {
     my ($self, $fid) = @_;
     debug(sprintf("Fixing FID %d", $fid->id));
 
-    # This should happen first, since the fid gets awkwardly reloaded...
-    $fid->update_devcount;
-
     # make devfid objects from the devids that this fid is on,
     my @dfids = map { MogileFS::DevFID->new($_, $fid) } $fid->devids;
 
@@ -208,6 +220,9 @@ sub fix_fid {
     my @good_devs;
     my @bad_devs;
     my %already_checked;  # devid -> 1.
+    my $alg = $fid->class->hashname || $self->{opt_checksum};
+    my $checksums = {};
+    my $ping_cb = sub { $self->still_alive };
 
     my $check_dfids = sub {
         my $is_desperate_mode = shift;
@@ -223,10 +238,27 @@ sub fix_fid {
                 next;
             }
 
-            my $disk_size = $self->size_on_disk($dfid);
+            my $disk_size = $dfid->size_on_disk;
             die "dev " . $dev->id . " unreachable" unless defined $disk_size;
 
             if ($disk_size == $fid->length) {
+                if ($alg && $alg ne "off") {
+                    my $digest = $self->checksum_on_disk($dfid, $alg, $ping_cb);
+                    unless (defined $digest) {
+                        die "dev " . $dev->id . " unreachable";
+                    }
+
+                    # DELETE could've hit right after size check
+                    if ($digest eq "-1") {
+                        unless ($is_desperate_mode) {
+                            $fid->fsck_log(EV_FILE_MISSING, $dev);
+                        }
+                        push @bad_devs, $dfid->device;
+                        next;
+                    }
+                    push @{$checksums->{$digest} ||= []}, $dfid->device;
+                }
+
                 push @good_devs, $dfid->device;
                 # if we were doing a desperate search, one is enough, we can stop now!
                 return if $is_desperate_mode;
@@ -263,7 +295,11 @@ sub fix_fid {
         $check_dfids->("desperate");
 
         # still can't fix it?
-        return CANT_FIX unless @good_devs;
+        unless (@good_devs) {
+            $self->forget_bad_devs($fid, @bad_devs);
+            $fid->update_devcount;
+            return CANT_FIX;
+        }
 
         # wow, we actually found it!
         $fid->fsck_log(EV_FOUND_FID);
@@ -273,14 +309,11 @@ sub fix_fid {
         # wrong, with only one file_on record...) and re-replicate
     }
 
-    # remove the file_on mappings for devices that were bogus/missing.
-    foreach my $bdev (@bad_devs) {
-        error("removing file_on mapping for fid=" . $fid->id . ", dev=" . $bdev->id);
-        $fid->forget_about_device($bdev);
-    }
-
+    $self->forget_bad_devs($fid, @bad_devs);
     # in case the devcount or similar was fixed.
     $fid->want_reload;
+
+    $self->fix_checksums($fid, $checksums) if $alg && $alg ne "off";
 
     # Note: this will reload devids, if they called 'note_on_device'
     # or 'forget_about_device'
@@ -291,21 +324,128 @@ sub fix_fid {
     }
     
     # Clean up the device count if it's wrong
-    unless(scalar($fid->devids) == $fid->devcount) {
-        $fid->update_devcount();
-        $fid->fsck_log(EV_BAD_COUNT);
-    }
+    $self->maybe_fix_devcount($fid);
 
     return HANDLED;
 }
 
-# returns 0 on missing,
+sub forget_file_on_with_bad_checksums {
+    my ($self, $fid, $checksums) = @_;
+    foreach my $bdevs (values %$checksums) {
+        foreach my $bdev (@$bdevs) {
+            error("removing file_on mapping for fid=" . $fid->id . ", dev=" . $bdev->id);
+            $fid->forget_about_device($bdev);
+        }
+    }
+}
+
+# returns -1 on missing,
 # undef on connectivity error,
-# else size of file on disk (after HTTP HEAD or mogstored stat)
-sub size_on_disk {
-    my ($self, $dfid) = @_;
-    return undef if $dfid->device->dstate->is_perm_dead;
-    return $dfid->size_on_disk;
+# else checksum of file on disk (after HTTP GET or mogstored read)
+sub checksum_on_disk {
+    my ($self, $dfid, $alg, $ping_cb) = @_;
+    return $dfid->checksum_on_disk($alg, $ping_cb, "fsck");
+}
+
+sub bad_checksums_errmsg {
+    my ($self, $alg, $checksums) = @_;
+    my @err;
+
+    foreach my $checksum (keys %$checksums) {
+        my $bdevs = join(",", map { $_->id } @{$checksums->{$checksum}});
+        $checksum = unpack("H*", $checksum);
+        push @err, "$alg:$checksum on devids=[$bdevs]"
+    }
+
+    return join('; ', @err);
+}
+
+# we don't now what checksum the file is supposed to be, but some
+# of the devices had checksums that didn't match the other(s).
+sub auto_checksums_bad {
+    my ($self, $fid, $checksums) = @_;
+    my $alg = $self->{opt_checksum};
+    my $err = $self->bad_checksums_errmsg($alg, $checksums);
+
+    error("$fid has multiple checksums: $err");
+    $fid->fsck_log(EV_MULTI_CHECKSUM);
+}
+
+sub all_checksums_bad {
+    my ($self, $fid, $checksums) = @_;
+    my $alg = $fid->class->hashname or return; # class could've changed
+    my $cur_checksum = $fid->checksum;
+    my $err = $self->bad_checksums_errmsg($alg, $checksums);
+    my $cur = $cur_checksum ? "Expected: $cur_checksum"
+                            : "No known valid checksum";
+    error("all checksums bad: $err. $cur");
+    $fid->fsck_log(EV_BAD_CHECKSUM);
+}
+
+sub fix_checksums {
+    my ($self, $fid, $checksums) = @_;
+    my $cur_checksum = $fid->checksum;
+    my @all_checksums = keys(%$checksums);
+
+    if (scalar(@all_checksums) == 1) { # all checksums match, good!
+        my $disk_checksum = $all_checksums[0];
+        if ($cur_checksum) {
+            if ($cur_checksum->{checksum} ne $disk_checksum) {
+                $fid->fsck_log(EV_BAD_CHECKSUM);
+            }
+        } else { # fresh row to checksum
+            my $hashtype = $fid->class->hashtype;
+
+            # we store this in the database
+            if ($hashtype) {
+                my %row = (
+                    fid => $fid->id,
+                    checksum => $disk_checksum,
+                    hashtype => $hashtype,
+                );
+                my $new_checksum = MogileFS::Checksum->new(\%row);
+                debug("creating new checksum=$new_checksum");
+                $fid->fsck_log(EV_NO_CHECKSUM);
+                $new_checksum->save;
+            } else {
+                my $hex_checksum = unpack("H*", $disk_checksum);
+                my $alg = $self->{opt_checksum};
+                debug("fsck_checksum=auto good: $fid $alg:$hex_checksum");
+            }
+        }
+    } elsif ($cur_checksum) {
+        my $good = delete($checksums->{$cur_checksum->{checksum}});
+        if ($good && (scalar(@$good) > 0)) {
+            $self->forget_file_on_with_bad_checksums($fid, $checksums);
+            # will fail $fid->devids_meet_policy and re-replicate
+        } else {
+            $self->all_checksums_bad($fid, $checksums);
+        }
+    } elsif ($self->{opt_checksum}) {
+        $self->auto_checksums_bad($fid, $checksums);
+    } else {
+        $self->all_checksums_bad($fid, $checksums);
+    }
+}
+
+# remove the file_on mappings for devices that were bogus/missing.
+sub forget_bad_devs {
+    my ($self, $fid, @bad_devs) = @_;
+    foreach my $bdev (@bad_devs) {
+        error("removing file_on mapping for fid=" . $fid->id . ", dev=" . $bdev->id);
+        $fid->forget_about_device($bdev);
+    }
+}
+
+sub maybe_fix_devcount {
+    # don't even log BCNT errors if skip_devcount is enabled
+    return if MogileFS::Config->server_setting_cached('skip_devcount');
+
+    my ($self, $fid) = @_;
+    return if scalar($fid->devids) == $fid->devcount;
+    # log a bad count
+    $fid->fsck_log(EV_BAD_COUNT);
+    $fid->update_devcount();
 }
 
 1;

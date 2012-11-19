@@ -33,7 +33,7 @@ sub new_from_args {
 
 sub valid_state {
     my ($class, $state) = @_;
-    return $state && $state =~ /^alive|dead|down$/;
+    return $state && $state =~ /\A(?:alive|dead|down)\z/;
 }
 
 # Instance methods:
@@ -70,7 +70,7 @@ sub observed_fields {
     return $_[0]->fields(@observed_fields);
 }
 
-sub should_get_new_files {
+sub alive {
     return $_[0]->status eq 'alive';
 }
 

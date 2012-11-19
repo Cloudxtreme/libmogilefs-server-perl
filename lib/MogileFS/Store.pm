@@ -1,7 +1,7 @@
 package MogileFS::Store;
 use strict;
 use warnings;
-use Carp qw(croak);
+use Carp qw(croak confess);
 use MogileFS::Util qw(throw max error);
 use DBI;  # no reason a Store has to be DBI-based, but for now they all are.
 use List::Util qw(shuffle);
@@ -19,7 +19,8 @@ use List::Util qw(shuffle);
 # 13: modifies 'server_settings.value' to TEXT for wider values
 #     also adds a TEXT 'arg' column to file_to_queue for passing arguments
 # 14: modifies 'device' mb_total, mb_used to INT for devs > 16TB
-use constant SCHEMA_VERSION => 14;
+# 15: adds checksum table, adds 'hashtype' column to 'class' table
+use constant SCHEMA_VERSION => 15;
 
 sub new {
     my ($class) = @_;
@@ -57,7 +58,7 @@ sub new_from_dsn_user_pass {
         connected_slaves => {},
         dead_slaves      => {},
         dead_backoff     => {}, # how many times in a row a slave has died
-        connect_timeout  => 30, # High default.
+        connect_timeout  => 10, # High default.
     }, $subclass;
     $self->init;
     return $self;
@@ -171,12 +172,12 @@ sub mark_as_slave {
     my $self = shift;
     die "Incapable of becoming slave." unless $self->can_do_slaves;
 
-    $self->{slave} = 1;
+    $self->{is_slave} = 1;
 }
 
 sub is_slave {
     my $self = shift;
-    return $self->{slave};
+    return $self->{is_slave};
 }
 
 sub _slaves_list_changed {
@@ -290,7 +291,7 @@ sub get_slave {
     # If we have no slaves, then return silently.
     return unless @slaves_list;
 
-    my $slave_skip_filtering = MogileFS::Config->server_setting('slave_skip_filtering');
+    my $slave_skip_filtering = MogileFS::Config->server_setting_cached('slave_skip_filtering');
 
     unless (defined $slave_skip_filtering && $slave_skip_filtering eq 'on') {
         MogileFS::run_global_hook('slave_list_filter', \@slaves_list);
@@ -351,6 +352,14 @@ sub dbh {
             $self->{recheck_done_gen} = $self->{recheck_req_gen};
         }
         return $self->{dbh} if $self->{dbh};
+    }
+
+    # Shortcut flag: if monitor thinks the master is down, avoid attempting to
+    # connect to it for now. If we already have a connection to the master,
+    # keep using it as above.
+    if (!$self->is_slave) {
+        my $flag = MogileFS::Config->server_setting_cached('_master_db_alive', 0);
+        return if (defined $flag && $flag == 0);;
     }
 
     eval {
@@ -489,7 +498,7 @@ use constant TABLES => qw( domain class file tempfile file_to_delete
                             unreachable_fids file_on file_on_corrupt host
                             device server_settings file_to_replicate
                             file_to_delete_later fsck_log file_to_queue
-                            file_to_delete2 );
+                            file_to_delete2 checksum);
 
 sub setup_database {
     my $sto = shift;
@@ -524,6 +533,7 @@ sub setup_database {
     $sto->upgrade_modify_server_settings_value;
     $sto->upgrade_add_file_to_queue_arg;
     $sto->upgrade_modify_device_size;
+    $sto->upgrade_add_class_hashtype;
 
     return 1;
 }
@@ -590,7 +600,8 @@ sub TABLE_class {
     PRIMARY KEY (dmid,classid),
     classname     VARCHAR(50),
     UNIQUE      (dmid,classname),
-    mindevcount   TINYINT UNSIGNED NOT NULL
+    mindevcount   TINYINT UNSIGNED NOT NULL,
+    hashtype  TINYINT UNSIGNED
     )"
 }
 
@@ -796,6 +807,14 @@ sub TABLE_file_to_delete2 {
     )"
 }
 
+sub TABLE_checksum {
+    "CREATE TABLE checksum (
+    fid INT UNSIGNED NOT NULL PRIMARY KEY,
+    hashtype TINYINT UNSIGNED NOT NULL,
+    checksum VARBINARY(64) NOT NULL
+    )"
+}
+
 # these five only necessary for MySQL, since no other database existed
 # before, so they can just create the tables correctly to begin with.
 # in the future, there might be new alters that non-MySQL databases
@@ -814,6 +833,13 @@ sub upgrade_add_class_replpolicy {
     my ($self) = @_;
     unless ($self->column_type("class", "replpolicy")) {
         $self->dowell("ALTER TABLE class ADD COLUMN replpolicy VARCHAR(255)");
+    }
+}
+
+sub upgrade_add_class_hashtype {
+    my ($self) = @_;
+    unless ($self->column_type("class", "hashtype")) {
+        $self->dowell("ALTER TABLE class ADD COLUMN hashtype TINYINT UNSIGNED");
     }
 }
 
@@ -918,6 +944,17 @@ sub update_class_replpolicy {
     };
     $self->condthrow;
     return 1;
+}
+
+# return 1 on success, die otherwise
+sub update_class_hashtype {
+    my $self = shift;
+    my %arg  = $self->_valid_params([qw(dmid classid hashtype)], @_);
+    eval {
+    $self->dbh->do("UPDATE class SET hashtype=? WHERE dmid=? AND classid=?",
+                   undef, $arg{hashtype}, $arg{dmid}, $arg{classid});
+    };
+    $self->condthrow;
 }
 
 sub nfiles_with_dmid_classid_devcount {
@@ -1204,6 +1241,8 @@ sub delete_class {
 
 sub delete_fidid {
     my ($self, $fidid) = @_;
+    eval { $self->delete_checksum($fidid); };
+    $self->condthrow;
     eval { $self->dbh->do("DELETE FROM file WHERE fid=?", undef, $fidid); };
     $self->condthrow;
     eval { $self->dbh->do("DELETE FROM tempfile WHERE fid=?", undef, $fidid); };
@@ -1230,12 +1269,12 @@ sub delete_and_return_tempfile_row {
 
 sub replace_into_file {
     my $self = shift;
-    my %arg  = $self->_valid_params([qw(fidid dmid key length classid)], @_);
+    my %arg  = $self->_valid_params([qw(fidid dmid key length classid devcount)], @_);
     die "Your database does not support REPLACE! Reimplement replace_into_file!" unless $self->can_replace;
     eval {
         $self->dbh->do("REPLACE INTO file (fid, dmid, dkey, length, classid, devcount) ".
-                       "VALUES (?,?,?,?,?,0) ", undef,
-                       @arg{'fidid', 'dmid', 'key', 'length', 'classid'});
+                       "VALUES (?,?,?,?,?,?) ", undef,
+                       @arg{'fidid', 'dmid', 'key', 'length', 'classid', 'devcount'});
     };
     $self->condthrow;
 }
@@ -1288,12 +1327,15 @@ sub get_all_classes {
     my ($self) = @_;
     my (@ret, $row);
 
-    my $repl_col = "";
+    my @cols = qw/dmid classid classname mindevcount/;
     if ($self->cached_schema_version >= 10) {
-        $repl_col = ", replpolicy";
+        push @cols, 'replpolicy';
+        if ($self->cached_schema_version >= 15) {
+            push @cols, 'hashtype';
+        }
     }
-
-    my $sth = $self->dbh->prepare("SELECT dmid, classid, classname, mindevcount $repl_col FROM class");
+    my $cols = join(', ', @cols);
+    my $sth = $self->dbh->prepare("SELECT $cols FROM class");
     $sth->execute;
     push @ret, $row while $row = $sth->fetchrow_hashref;
     return @ret;
@@ -1538,36 +1580,16 @@ sub get_fidid_chunks_by_device {
     return $fidids;
 }
 
-# takes two arguments, fidid to be above, and optional limit (default
-# 1,000).  returns up to that that many fidids above the provided
-# fidid.  returns array of MogileFS::FID objects, sorted by fid ids.
-sub get_fids_above_id {
-    my ($self, $fidid, $limit) = @_;
-    $limit ||= 1000;
-    $limit = int($limit);
-
-    my @ret;
-    my $dbh = $self->dbh;
-    my $sth = $dbh->prepare("SELECT fid, dmid, dkey, length, classid, devcount ".
-                            "FROM   file ".
-                            "WHERE  fid > ? ".
-                            "ORDER BY fid LIMIT $limit");
-    $sth->execute($fidid);
-    while (my $row = $sth->fetchrow_hashref) {
-        push @ret, MogileFS::FID->new_from_db_row($row);
-    }
-    return @ret;
-}
-
-# Same as above, but returns unblessed hashref.
-sub get_fidids_above_id {
-    my ($self, $fidid, $limit) = @_;
+# gets fidids above fidid_low up to (and including) fidid_high
+sub get_fidids_between {
+    my ($self, $fidid_low, $fidid_high, $limit) = @_;
     $limit ||= 1000;
     $limit = int($limit);
 
     my $dbh = $self->dbh;
-    my $fidids = $dbh->selectcol_arrayref(qq{SELECT fid FROM file WHERE fid > ?
-        ORDER BY fid LIMIT $limit}, undef, $fidid);
+    my $fidids = $dbh->selectcol_arrayref(qq{SELECT fid FROM file
+        WHERE fid > ? and fid <= ?
+        ORDER BY fid LIMIT $limit}, undef, $fidid_low, $fidid_high);
     return $fidids;
 }
 
@@ -1732,8 +1754,9 @@ sub grab_files_to_queued {
 # and tell it not to.
 sub should_begin_replicating_fidid {
     my ($self, $fidid) = @_;
-    warn("Inefficient implementation of should_begin_replicating_fidid() in $self!\n");
-    1;
+    my $lockname = "mgfs:fid:$fidid:replicate";
+    return 1 if $self->get_lock($lockname, 1);
+    return 0;
 }
 
 # called when replicator is done replicating a fid, so you can cleanup
@@ -1747,6 +1770,8 @@ sub should_begin_replicating_fidid {
 # locking in this pair of functions.
 sub note_done_replicating {
     my ($self, $fidid) = @_;
+    my $lockname = "mgfs:fid:$fidid:replicate";
+    $self->release_lock($lockname);
 }
 
 sub find_fid_from_file_to_replicate {
@@ -1833,11 +1858,15 @@ sub get_keys_like {
     $prefix .= '%';
     $after  = '' unless defined $after;
 
+    my $like = $self->get_keys_like_operator;
+
     # now select out our keys
     return $self->dbh->selectcol_arrayref
-        ('SELECT dkey FROM file WHERE dmid = ? AND dkey LIKE ? AND dkey > ? ' .
+        ("SELECT dkey FROM file WHERE dmid = ? AND dkey $like ? AND dkey > ? " .
          "ORDER BY dkey LIMIT $limit", undef, $dmid, $prefix, $after);
 }
+
+sub get_keys_like_operator { return "LIKE"; }
 
 # return arrayref of all tempfile rows (themselves also arrayrefs, of [$fidid, $devids])
 # that were created $secs_ago seconds ago or older.
@@ -2098,23 +2127,52 @@ sub release_lock {
 sub lock_queue { 1 }
 sub unlock_queue { 1 }
 
-# returns up to $limit @fidids which are on provided $devid
-sub random_fids_on_device {
-    my ($self, $devid, $limit) = @_;
-    $limit = int($limit) || 100;
+sub BLOB_BIND_TYPE { undef; }
 
+sub set_checksum {
+    my ($self, $fidid, $hashtype, $checksum) = @_;
     my $dbh = $self->dbh;
+    die "Your database does not support REPLACE! Reimplement set_checksum!" unless $self->can_replace;
 
-    # FIXME: this blows. not random.  and good chances these will
-    # eventually get to point where they're un-rebalance-able, and we
-    # never move on past the first 5000
-    my @some_fids = List::Util::shuffle(@{
-        $dbh->selectcol_arrayref("SELECT fid FROM file_on WHERE devid=? LIMIT 5000",
-                                 undef, $devid) || []
-                                 });
+    eval {
+        my $sth = $dbh->prepare("REPLACE INTO checksum " .
+                                "(fid, hashtype, checksum) " .
+                                "VALUES (?, ?, ?)");
+        $sth->bind_param(1, $fidid);
+        $sth->bind_param(2, $hashtype);
+        $sth->bind_param(3, $checksum, BLOB_BIND_TYPE);
+        $sth->execute;
+    };
+    $self->condthrow;
+}
 
-    @some_fids = @some_fids[0..$limit-1] if $limit < @some_fids;
-    return @some_fids;
+sub get_checksum {
+    my ($self, $fidid) = @_;
+
+    $self->dbh->selectrow_hashref("SELECT fid, hashtype, checksum " .
+                                  "FROM checksum WHERE fid = ?",
+                                  undef, $fidid);
+}
+
+sub delete_checksum {
+    my ($self, $fidid) = @_;
+
+    $self->dbh->do("DELETE FROM checksum WHERE fid = ?", undef, $fidid);
+}
+
+# setup the value used in a 'nexttry' field to indicate that this item will
+# never actually be tried again and require some sort of manual intervention.
+use constant ENDOFTIME => 2147483647;
+
+sub end_of_time { ENDOFTIME; }
+
+# returns the size of the non-urgent replication queue
+# nexttry == 0                        - the file is urgent
+# nexttry != 0 && nexttry < ENDOFTIME - the file is deferred
+sub deferred_repl_queue_length {
+    my ($self) = @_;
+
+    return $self->dbh->selectrow_array('SELECT COUNT(*) FROM file_to_replicate WHERE nexttry != 0 AND nexttry < ?', undef, $self->end_of_time);
 }
 
 1;
