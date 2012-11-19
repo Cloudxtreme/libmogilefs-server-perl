@@ -1,3 +1,9 @@
+libmogilefs-server-perl (2.65-1) quantal; urgency=low
+
+  * New upstream version
+
+ -- stuart <stuart@we7.com>  Mon, 19 Nov 2012 14:35:26 +0000
+
 libmogilefs-server-perl (2.57-1) lucid; urgency=low
 
   * New upstream version
