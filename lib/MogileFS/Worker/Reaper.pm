@@ -73,6 +73,14 @@ sub reaper_inject_limit {
 # forever.   $delay is the current delay we were scheduled at
 sub reap_dev {
     my ($self, $devid, $delay) = @_;
+
+    # ensure the master DB is up, retry in REAP_INTERVAL if down
+    unless ($self->validate_dbh) {
+        $delay = REAP_INTERVAL;
+        Danga::Socket->AddTimer($delay, sub { $self->reap_dev($devid, $delay) });
+        return;
+    }
+
     my $limit = $self->reaper_inject_limit;
 
     # just in case a user mistakenly nuked a devid from the device table:
@@ -147,8 +155,8 @@ sub work {
     my $reap_check;
     $reap_check = sub {
         # get db and note we're starting a run
+        $self->parent_ping;
         debug("Reaper running; looking for dead devices");
-        $self->still_alive;
 
         foreach my $dev (grep { $_->dstate->is_perm_dead }
                          Mgd::device_factory()->get_all)
