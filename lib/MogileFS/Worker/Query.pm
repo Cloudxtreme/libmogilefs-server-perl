@@ -202,8 +202,7 @@ sub cmd_create_open {
     my $args = shift;
 
     # has to be filled out for some plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # first, pass this to a hook to do any manipulations needed
     eval {MogileFS::run_global_hook('cmd_create_open', $args)};
@@ -249,14 +248,13 @@ sub cmd_create_open {
 
     $profstart->("find_deviceid");
 
-    my @devices;
-
-    unless (MogileFS::run_global_hook('cmd_create_open_order_devices', [Mgd::device_factory()->get_all], \@devices)) {
-        @devices = sort_devs_by_freespace(Mgd::device_factory()->get_all);
-    }
-
+    my @devices = Mgd::device_factory()->get_all;
     if ($size) {
         @devices = grep { ($_->mb_free * 1024*1024) > $size } @devices;
+    }
+
+    unless (MogileFS::run_global_hook('cmd_create_open_order_devices', [ @devices ], \@devices)) {
+        @devices = sort_devs_by_freespace(@devices);
     }
 
     # find suitable device(s) to put this file on.
@@ -346,13 +344,18 @@ sub sort_devs_by_freespace {
     return @list;
 }
 
+sub valid_key {
+    my ($key) = @_;
+
+    return defined($key) && length($key);
+}
+
 sub cmd_create_close {
     my MogileFS::Worker::Query $self = shift;
     my $args = shift;
 
     # has to be filled out for some plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # call out to a hook that might modify the arguments for us
     MogileFS::run_global_hook('cmd_create_close', $args);
@@ -399,7 +402,7 @@ sub cmd_create_close {
 
     # if a temp file is closed without a provided-key, that means to
     # delete it.
-    unless (defined $key && length($key)) {
+    unless (valid_key($key)) {
         $failed->();
         return $self->ok_line;
     }
@@ -482,15 +485,20 @@ sub cmd_updateclass {
     my MogileFS::Worker::Query $self = shift;
     my $args = shift;
 
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
+
+    # call out to a hook that might modify the arguments for us, abort if it tells us to
+    my $rv = MogileFS::run_global_hook('cmd_updateclass', $args);
+    return $self->err_line('plugin_aborted') if defined $rv && ! $rv;
 
     my $dmid  = $args->{dmid};
-    my $key   = $args->{key}        or return $self->err_line("no_key");
+    my $key   = $args->{key};
+    valid_key($key) or return $self->err_line("no_key");
     my $class = $args->{class}      or return $self->err_line("no_class");
 
-    my $classid = eval { Mgd::class_factory()->get_by_name($dmid, $class)->id }
+    my $classobj = Mgd::class_factory()->get_by_name($dmid, $class)
         or return $self->err_line('class_not_found');
+    my $classid = $classobj->id;
 
     my $fid = MogileFS::FID->new_from_dmid_and_key($dmid, $key)
         or return $self->err_line('invalid_key');
@@ -511,8 +519,7 @@ sub cmd_delete {
     my $args = shift;
 
     # validate domain for plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # now invoke the plugin, abort if it tells us to
     my $rv = MogileFS::run_global_hook('cmd_delete', $args);
@@ -521,7 +528,9 @@ sub cmd_delete {
 
     # validate parameters
     my $dmid = $args->{dmid};
-    my $key = $args->{key} or return $self->err_line("no_key");
+    my $key = $args->{key};
+
+    valid_key($key) or return $self->err_line("no_key");
 
     # is this fid still owned by this key?
     my $fid = MogileFS::FID->new_from_dmid_and_key($dmid, $key)
@@ -549,9 +558,8 @@ sub cmd_file_debug {
         $fid = $sto->file_row_from_fidid($args->{fid}+0);
     } else {
         # If not, require dmid/dkey and pick up the fid from there.
-        $args->{dmid} = $self->check_domain($args)
-            or return $self->err_line('domain_not_found');
-        return $self->err_line("no_key") unless $args->{key};
+        $args->{dmid} = $self->check_domain($args) or return;
+        return $self->err_line("no_key") unless valid_key($args->{key});
         
         # now invoke the plugin, abort if it tells us to
         my $rv = MogileFS::run_global_hook('cmd_file_debug', $args);
@@ -615,8 +623,7 @@ sub cmd_file_info {
     my $args = shift;
 
     # validate domain for plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # now invoke the plugin, abort if it tells us to
     my $rv = MogileFS::run_global_hook('cmd_file_info', $args);
@@ -625,7 +632,9 @@ sub cmd_file_info {
 
     # validate parameters
     my $dmid = $args->{dmid};
-    my $key = $args->{key} or return $self->err_line("no_key");
+    my $key = $args->{key};
+
+    valid_key($key) or return $self->err_line("no_key");
 
     my $fid;
     Mgd::get_store()->slaves_ok(sub {
@@ -700,8 +709,7 @@ sub cmd_list_keys {
     my $args = shift;
 
     # validate parameters
-    my $dmid = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    my $dmid = $self->check_domain($args) or return;
     my ($prefix, $after, $limit) = ($args->{prefix}, $args->{after}, $args->{limit});
 
     if (defined $prefix and $prefix ne '') {
@@ -742,10 +750,11 @@ sub cmd_rename {
     my $args = shift;
 
     # validate parameters
-    my $dmid = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    my $dmid = $self->check_domain($args) or return;
     my ($fkey, $tkey) = ($args->{from_key}, $args->{to_key});
-    return $self->err_line("no_key") unless $fkey && $tkey;
+    unless (valid_key($fkey) && valid_key($tkey)) {
+        return $self->err_line("no_key");
+    }
 
     my $fid = MogileFS::FID->new_from_dmid_and_key($dmid, $fkey)
         or return  $self->err_line("unknown_key");
@@ -1071,8 +1080,7 @@ sub cmd_get_paths {
     my $memcache_ttl  = MogileFS::Config->server_setting_cached("memcache_ttl") || 3600;
 
     # validate domain for plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # now invoke the plugin, abort if it tells us to
     my $rv = MogileFS::run_global_hook('cmd_get_paths', $args);
@@ -1081,7 +1089,9 @@ sub cmd_get_paths {
 
     # validate parameters
     my $dmid = $args->{dmid};
-    my $key = $args->{key} or return $self->err_line("no_key");
+    my $key = $args->{key};
+
+    valid_key($key) or return $self->err_line("no_key");
 
     # We default to returning two possible paths.
     # but the client may ask for more if they want.
@@ -1248,8 +1258,7 @@ sub cmd_edit_file {
     my $memc = MogileFS::Config->memcache_client;
 
     # validate domain for plugins
-    $args->{dmid} = $self->check_domain($args)
-        or return $self->err_line('domain_not_found');
+    $args->{dmid} = $self->check_domain($args) or return;
 
     # now invoke the plugin, abort if it tells us to
     my $rv = MogileFS::run_global_hook('cmd_get_paths', $args);
@@ -1258,7 +1267,9 @@ sub cmd_edit_file {
 
     # validate parameters
     my $dmid = $args->{dmid};
-    my $key = $args->{key} or return $self->err_line("no_key");
+    my $key = $args->{key};
+
+    valid_key($key) or return $self->err_line("no_key");
 
     # get DB handle
     my $fid;
@@ -1497,7 +1508,7 @@ sub cmd_fsck_start {
     my $final_fid   = $intss->("fsck_fid_at_end");
     if (($checked_fid && $final_fid && $checked_fid >= $final_fid) ||
         (!$final_fid && !$checked_fid)) {
-        $self->_do_fsck_reset or return $self->err_line;
+        $self->_do_fsck_reset or return $self->err_line("db");
     }
 
     # set params for stats:
@@ -1533,27 +1544,34 @@ sub cmd_fsck_reset {
     $sto->set_server_setting("fsck_highest_fid_checked", 
         ($args->{startpos} ? $args->{startpos} : "0"));
 
-    $self->_do_fsck_reset or return $self->err_line;
+    $self->_do_fsck_reset or return $self->err_line("db");
     return $self->ok_line;
 }
 
 sub _do_fsck_reset {
     my MogileFS::Worker::Query $self = shift;
-    my $sto = Mgd::get_store();
-    $sto->set_server_setting("fsck_start_time",       undef);
-    $sto->set_server_setting("fsck_stop_time",        undef);
-    $sto->set_server_setting("fsck_fids_checked",     0);
-    $sto->set_server_setting("fsck_fid_at_end",       $sto->max_fidid);
+    eval {
+        my $sto = Mgd::get_store();
+        $sto->set_server_setting("fsck_start_time",       undef);
+        $sto->set_server_setting("fsck_stop_time",        undef);
+        $sto->set_server_setting("fsck_fids_checked",     0);
+        $sto->set_server_setting("fsck_fid_at_end",       $sto->max_fidid);
 
-    # clear existing event counts summaries.
-    my $ss = $sto->server_settings;
-    foreach my $k (keys %$ss) {
-        next unless $k =~ /^fsck_sum_evcount_/;
-        $sto->set_server_setting($k, undef);
+        # clear existing event counts summaries.
+        my $ss = $sto->server_settings;
+        foreach my $k (keys %$ss) {
+            next unless $k =~ /^fsck_sum_evcount_/;
+            $sto->set_server_setting($k, undef);
+        }
+        my $logid = $sto->max_fsck_logid;
+        $sto->set_server_setting("fsck_start_maxlogid", $logid);
+        $sto->set_server_setting("fsck_logid_processed", $logid);
+    };
+    if ($@) {
+        error("DB error in _do_fsck_reset: $@");
+        return 0;
     }
-    my $logid = $sto->max_fsck_logid;
-    $sto->set_server_setting("fsck_start_maxlogid", $logid);
-    $sto->set_server_setting("fsck_logid_processed", $logid);
+    return 1;
 }
 
 sub cmd_fsck_clearlog {
@@ -1783,6 +1801,10 @@ sub err_line {
     if ($self->{querystarttime}) {
         $delay = sprintf("%.4f ", Time::HiRes::tv_interval($self->{querystarttime}));
         $self->{querystarttime} = undef;
+    } else {
+        # don't send another ERR line if we already sent one
+        error("err_line called redundantly with $err_code ( " . eurl($err_text) . ")");
+        return 0;
     }
 
     my $id = defined $self->{reqid} ? "$self->{reqid} " : '';
