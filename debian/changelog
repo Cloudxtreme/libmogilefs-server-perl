@@ -1,3 +1,13 @@
+libmogilefs-server-perl (2.67-3) unstable; urgency=low
+
+  * Fixed the init scripts which were set to "exit 0" on all errors, causing
+    confusion for scripts and programs looking to check the service when it's
+    disabled.
+  * Asses support for status option to check the status of the running
+    services.
+
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Tue, 01 Apr 2014 12:36:27 +0100
+
 libmogilefs-server-perl (2.67-2) unstable; urgency=low
 
   * adding /bin/bash to the mogilefsd init script.

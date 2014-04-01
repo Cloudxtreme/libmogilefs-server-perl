@@ -4,7 +4,7 @@
 #		This file should be used to construct scripts for /etc/init.d.
 #
 #		Written by Miquel van Smoorenburg <miquels@cistron.nl>.
-#		Modified for Debian 
+#		Modified for Debian
 #		by Ian Murdock <imurdock@gnu.ai.mit.edu>.
 #
 # Version:	@(#)skeleton  1.9  26-Feb-2001  miquels@cistron.nl
@@ -15,9 +15,10 @@
 # Required-Stop:     $remote_fs
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: starts the mogilefs tracker daemon
-# Description:       starts mogilefs using start-stop-daemon
+# Short-Description: Manage the mogilefs tracker daemon
+# Description:       Starts and stops mogilefs tracker daemon.
 ### END INIT INFO
+
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 DAEMON=/usr/bin/mogilefsd
 NAME=mogilefsd
@@ -25,80 +26,80 @@ DESC=mogilefsd
 DEFAULTS=/etc/default/$NAME
 PIDFILE=/var/run/$NAME.pid
 
-test -x $DAEMON || exit 0
+test -x $DAEMON || exit 1
 
-if [ ! -e $DEFAULTS ]
-  then
+if [ ! -e $DEFAULTS ]; then
 	echo "Can't start $NAME. Defaults file ($DEFAULTS) doesn't exist."
 	echo "Please run dpkg-reconfigure $NAME to correct the problem."
-	exit 0
+	exit 1
 fi
 
-#Read defaults file
 [ -r $DEFAULTS ] && . $DEFAULTS
 
-if [ "x$START" != "xYES" ]
-  then
-  exit 0
+if [ "x$START" != "xYES" ]; then
+	echo "Disabled: $NAME." >&2
+	exit 1
 fi
 
 if [ "x$MOGILEFSD_RUNASUSER" == "x" ]
-  then
+	then
 
 	echo "Cannot determine user to run as, even though defaults file ($DEFAULTS) exists."
 	echo "Please run dpkg-reconfigure $NAME to correct the problem."
-	exit 0	
+	exit 1
 fi
 
 set -e
 
 case "$1" in
-  start)
-	echo -n "Starting $DESC: "
+	start)
+		echo -n "Starting $DESC: "
 
-	if [ -e $PIDFILE ]
-		then
-		
-		if [ -d /proc/`cat $PIDFILE`/ ]
-		then
-
-			echo "$NAME already running."
-			exit 0;
-		else
-			rm -f $PIDFILE
+		if [ -e $PIDFILE ]; then
+			if [ -d /proc/`cat $PIDFILE`/ ]; then
+				echo "$NAME already running."
+				exit 1;
+			else
+				rm -f $PIDFILE
+			fi
 		fi
 
-	fi
+		start-stop-daemon --start --quiet --exec $DAEMON --name $NAME --chuid $MOGILEFSD_RUNASUSER -- $DAEMON_ARGS
+		echo "$NAME."
+		;;
 
-	start-stop-daemon --start --quiet --exec $DAEMON --name $NAME --chuid $MOGILEFSD_RUNASUSER -- $DAEMON_ARGS
-	echo "$NAME."
-	;;
-  stop)
-	echo -n "Stopping $DESC: "
-	start-stop-daemon --stop --quiet --oknodo --name $NAME --user $MOGILEFSD_RUNASUSER
-	echo "$NAME."
-	rm -f $PIDFILE
-	;;
+	stop)
+		echo -n "Stopping $DESC: "
+		start-stop-daemon --stop --quiet --oknodo --name $NAME --user $MOGILEFSD_RUNASUSER
+		echo "$NAME."
+		rm -f $PIDFILE
+		;;
 
-  restart|force-reload)
-	#
-	#	If the "reload" option is implemented, move the "force-reload"
-	#	option to the "reload" entry above. If not, "force-reload" is
-	#	just the same as "restart".
-	#
-	echo -n "Restarting $DESC: "
-	start-stop-daemon --stop --quiet --oknodo --name $NAME --user $MOGILEFSD_RUNASUSER
-	rm -f $PIDFILE
-	sleep 1
-	start-stop-daemon --start --quiet --exec $DAEMON --name $NAME --chuid $MOGILEFSD_RUNASUSER -- $DAEMON_ARGS
-	echo "$NAME."
-	;;
-  *)
-	N=/etc/init.d/$NAME
-	# echo "Usage: $N {start|stop|restart|reload|force-reload}" >&2
-	echo "Usage: $N {start|stop|restart|force-reload}" >&2
-	exit 1
-	;;
+	restart|force-reload)
+		echo -n "Restarting $DESC: "
+		start-stop-daemon --stop --quiet --oknodo --name $NAME --user $MOGILEFSD_RUNASUSER
+		rm -f $PIDFILE
+		sleep 1
+		start-stop-daemon --start --quiet --exec $DAEMON --name $NAME --chuid $MOGILEFSD_RUNASUSER -- $DAEMON_ARGS
+		echo "$NAME."
+		;;
+
+	status)
+		echo -n "Status $DESC: "
+		if [ -e $PIDFILE ]; then
+			if [ -d /proc/`cat $PIDFILE`/ ]; then
+				echo "$NAME is running."
+				exit 0;
+			fi
+		fi
+		echo "$NAME is NOT running."
+		exit 1;
+		;;
+
+	*)
+		echo "Usage: /etc/init.d/$NAME {start|stop|restart|force-reload}" >&2
+		exit 1
+		;;
 esac
 
 exit 0
