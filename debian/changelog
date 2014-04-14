@@ -1,3 +1,10 @@
+libmogilefs-server-perl (2.67-6) unstable; urgency=low
+
+  * Added additional case for upper-case response in START so that it works with
+    our current configuration across all clusters.
+
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 07 Apr 2014 15:20:22 +0100
+
 libmogilefs-server-perl (2.67-5) unstable; urgency=low
 
   * Further updates the init script using another as the template to ensure it

@@ -27,7 +27,7 @@ test -x $DAEMON || exit 0
 . /lib/lsb/init-functions
 
 is_true() {
-    if [ "x$1" = "xtrue" -o "x$1" = "xyes" -o "x$1" = "x0" ] ; then
+    if [ "x$1" = "xtrue" -o "x$1" = "xyes" -o "x$1" = "xYES" -o "x$1" = "x0" ] ; then
         return 0
     else
         return 1
