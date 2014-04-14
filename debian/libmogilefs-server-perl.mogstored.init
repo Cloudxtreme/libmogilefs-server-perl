@@ -13,11 +13,11 @@
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 DAEMON=/usr/bin/mogstored
-DAEMON_OPTS="-D"
+PIDFILE=/var/run/mogstored.pid
+DAEMON_OPTS=""
 NAME="mogstored"
 DESC="mogstored"
 START="NO"
-PIDFILE=/var/run/$NAME.pid
 
 test -x $DAEMON || exit 0
 
@@ -35,8 +35,8 @@ is_true() {
 
 start_mogstored_agent() {
     if is_true "$START" ; then
-        start-stop-daemon --start --quiet --pidfile $PIDFILE \
-            --startas $DAEMON -- $NAME $DAEMON_OPTS
+        start-stop-daemon --start --quiet --name $NAME --exec $DAEMON \
+          --pidfile $PIDFILE --make-pidfile --background -- $DAEMON_OPTS
     else
         echo -n " ($NAME not configured to start; edit /etc/default/$NAME)"
     fi
@@ -47,7 +47,7 @@ stop_mogstored_agent() {
 }
 
 status_mogstored_agent() {
-        status_of_proc -p $PIDFILE $DAEMON $NAME
+        status_of_proc $DAEMON $NAME
 }
 
 case "$1" in

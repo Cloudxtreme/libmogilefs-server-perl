@@ -1,9 +1,17 @@
+libmogilefs-server-perl (2.67-7) unstable; urgency=low
+
+  * After further testing, the updated scripts function in all situations
+    properly with proper generation of PID files and proper start/stop and
+    status detection.
+
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 14 Apr 2014 12:00:12 +0100
+
 libmogilefs-server-perl (2.67-6) unstable; urgency=low
 
   * Added additional case for upper-case response in START so that it works with
     our current configuration across all clusters.
 
- -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 07 Apr 2014 15:20:22 +0100
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 14 Apr 2014 11:05:41 +0100
 
 libmogilefs-server-perl (2.67-5) unstable; urgency=low
 
@@ -13,7 +21,7 @@ libmogilefs-server-perl (2.67-5) unstable; urgency=low
   * Moved all the "defaults" out of /etc/default and into the init script itself
     so that the default file will be an override and not required.
 
- -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 07 Apr 2014 15:20:22 +0100
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 14 Apr 2014 10:51:03 +0100
 
 libmogilefs-server-perl (2.67-4) unstable; urgency=low
 

@@ -13,12 +13,12 @@
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 DAEMON=/usr/bin/mogilefsd
-DAEMON_OPTS="-D"
+PIDFILE=/var/run/mogilefsd.pid
+DAEMON_OPTS=""
 NAME="mogilefsd"
 DESC="mogilefsd"
 USER="mogile"
 START="NO"
-PIDFILE=/var/run/$NAME.pid
 
 test -x $DAEMON || exit 0
 
@@ -36,8 +36,9 @@ is_true() {
 
 start_mogilefsd_agent() {
     if is_true "$START" ; then
-        start-stop-daemon --start --quiet --pidfile $PIDFILE \
-            --chuid $USER --startas $DAEMON -- $NAME $DAEMON_OPTS
+        start-stop-daemon --start --quiet --chuid $USER --name $NAME \
+          --pidfile $PIDFILE --make-pidfile --exec $DAEMON --background \
+          -- $DAEMON_OPTS
     else
         echo -n " ($NAME not configured to start; edit /etc/default/$NAME)"
     fi
@@ -48,7 +49,7 @@ stop_mogilefsd_agent() {
 }
 
 status_mogilefsd_agent() {
-        status_of_proc -p $PIDFILE $DAEMON $NAME
+        status_of_proc $DAEMON $NAME
 }
 
 case "$1" in
