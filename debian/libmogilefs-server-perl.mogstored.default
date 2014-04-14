@@ -1,1 +1,4 @@
-START='NO'
+# Defaults for MogileFS Storage Daemon - sourced by /etc/init.d/mogstored
+
+# Start mogstored on boot?
+START="NO"

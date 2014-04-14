@@ -1,3 +1,4 @@
-MOGILEFSD_RUNASUSER=mogile
-DAEMON_ARGS=-D
-START='NO'
+# Defaults for MogileFS Tracker - sourced by /etc/init.d/mogilefsd
+
+# Start mogilefsd on boot?
+START="NO"

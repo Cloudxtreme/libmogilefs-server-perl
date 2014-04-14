@@ -1,97 +1,78 @@
 #! /bin/sh
-#
-# skeleton	example file to build /etc/init.d/ scripts.
-#		This file should be used to construct scripts for /etc/init.d.
-#
-#		Written by Miquel van Smoorenburg <miquels@cistron.nl>.
-#		Modified for Debian
-#		by Ian Murdock <imurdock@gnu.ai.mit.edu>.
-#
-# Version:	@(#)skeleton  1.9  26-Feb-2001  miquels@cistron.nl
-#
 ### BEGIN INIT INFO
 # Provides:          mogstored
-# Required-Start:    $remote_fs
-# Required-Stop:     $remote_fs
+# Required-Start:    $network $named $remote_fs $syslog $all
+# Required-Stop:     $network $named $remote_fs $syslog
+# Should-Start:      mogstored
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: Manage the mogstored service
-# Description:       Starts and stops MogileFS storage daemon.
+# Short-Description: MogileFS Storage Daemon.
+# Description:       Starts the MogileFS storage daemon used to serve and
+#                    receive the files for the MogileFS object store.
 ### END INIT INFO
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 DAEMON=/usr/bin/mogstored
-NAME=mogstored
-DESC=mogstored
-DEFAULTS=/etc/default/$NAME
+DAEMON_OPTS="-D"
+NAME="mogstored"
+DESC="mogstored"
+START="NO"
 PIDFILE=/var/run/$NAME.pid
 
-test -x $DAEMON || exit 1
+test -x $DAEMON || exit 0
 
-if [ ! -e $DEFAULTS ]; then
-	echo "Can't start $NAME. Defaults file ($DEFAULTS) doesn't exist."
-	echo "Please run dpkg-reconfigure $NAME to correct the problem."
-	exit 1
-fi
+[ -r /etc/default/$NAME ] && . /etc/default/$NAME
 
-[ -r $DEFAULTS ] && . $DEFAULTS
+. /lib/lsb/init-functions
 
-if [ "x$START" != "xYES" ]; then
-  echo "Disabled: $NAME." >&2
-  exit 1
-fi
+is_true() {
+    if [ "x$1" = "xtrue" -o "x$1" = "xyes" -o "x$1" = "x0" ] ; then
+        return 0
+    else
+        return 1
+    fi
+}
 
-set -e
+start_mogstored_agent() {
+    if is_true "$START" ; then
+        start-stop-daemon --start --quiet --pidfile $PIDFILE \
+            --startas $DAEMON -- $NAME $DAEMON_OPTS
+    else
+        echo -n " ($NAME not configured to start; edit /etc/default/$NAME)"
+    fi
+}
+
+stop_mogstored_agent() {
+        start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE
+}
+
+status_mogstored_agent() {
+        status_of_proc -p $PIDFILE $DAEMON $NAME
+}
 
 case "$1" in
-  start)
-		echo -n "Starting $DESC: "
-
-		if [ -e $PIDFILE ]; then
-			if [ -d /proc/`cat $PIDFILE`/ ]; then
-				echo "$NAME already running."
-				exit 1;
-			else
-				rm -f $PIDFILE
-			fi
-		fi
-
-		start-stop-daemon --start --quiet --exec $DAEMON --pidfile $PIDFILE -b -m --name $NAME
-		echo "$NAME."
-		;;
-
-  stop)
-		echo -n "Stopping $DESC: "
-		start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE --name $NAME
-		echo "$NAME."
-		rm -f $PIDFILE
-		;;
-
-  restart|force-reload)
-		echo -n "Restarting $DESC: "
-		start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE --name $NAME
-		rm -f $PIDFILE
-		sleep 1
-		start-stop-daemon --start --quiet --exec $DAEMON --pidfile $PIDFILE -b -m --name $NAME
-		echo "$NAME."
-		;;
-
-	status)
-		echo -n "Status $DESC: "
-		if [ -e $PIDFILE ]; then
-			if [ -d /proc/`cat $PIDFILE`/ ]; then
-				echo "$NAME is running."
-				exit 0;
-			fi
-		fi
-		echo "$NAME is NOT running."
-		exit 1;
-		;;
-
+    start)
+        log_begin_msg "Starting $DESC"
+        start_mogstored_agent
+        log_end_msg $?
+        ;;
+    stop)
+        log_begin_msg "Stopping $DESC"
+        stop_mogstored_agent
+        log_end_msg $?
+        ;;
+    status)
+        status_mogstored_agent
+        ;;
+    restart|force-reload)
+        log_begin_msg "Restarting $DESC"
+        stop_mogstored_agent
+        sleep 1
+        start_mogstored_agent
+        log_end_msg $?
+        ;;
   *)
-		echo "Usage: /etc/init.d/$NAME {start|stop|restart|force-reload}" >&2
-		exit 1
-		;;
+        echo "Usage: $0 {start|stop|status|restart|force-reload}" >&2
+        exit 1
+        ;;
 esac
-
-exit 0

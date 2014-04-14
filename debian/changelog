@@ -1,3 +1,13 @@
+libmogilefs-server-perl (2.67-5) unstable; urgency=low
+
+  * Further updates the init script using another as the template to ensure it
+    better handles exit codes when it is disabled. Makes more use of the
+    stop-stop-daemon helper and associated tools for status.
+  * Moved all the "defaults" out of /etc/default and into the init script itself
+    so that the default file will be an override and not required.
+
+ -- Jonathan Wright <jonathanw@blinkbox.com>  Mon, 07 Apr 2014 15:20:22 +0100
+
 libmogilefs-server-perl (2.67-4) unstable; urgency=low
 
   * Modify init script for mogilefsd so that it boots up after everything else
